@@ -13,6 +13,7 @@ A lightweight, single-threaded media player built in C using **FFmpeg**, **SDL2*
 ## Features
 
 - **Single-Threaded Architecture**: Eliminates race conditions and concurrency overhead while maintaining smooth playback.
+- **Hardware Acceleration**: Built-in VAAPI hardware decoding support with graceful fallback to software decoding.
 - **Advanced Subtitle Rendering**: Native ASS/SSA subtitle support with soft-shadows and styling powered by `libass`.
 - **A/V Synchronization**: Audio/Video clock synchronization algorithm with frame-dropping and latency compensation.
 - **Playlist & Directory Scanning**: Automatically builds and sorts playlists from directory inputs or multiple file arguments.
@@ -92,6 +93,7 @@ vidp episode1.mkv episode2.mkv episode3.mkv
 ## Technical Highlights
 
 - **Single-Threaded Event Loop**: The decoder, audio-push mechanism, subtitle pipeline, and window event handling all reside in a unified loop to keep state transitions perfectly predictable.
+- **Hardware-Accelerated Decoding**: Leverages VAAPI contexts (`AV_HWDEVICE_TYPE_VAAPI`) for low-CPU decoding on supported GPUs.
 - **Memory Recycling**: Explicit resource teardown routines (`player_close_file`) free audio buffers, hardware textures, decoders, and force glibc arena compaction via `malloc_trim(0)` between track switches.
 
 ---

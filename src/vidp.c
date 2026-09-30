@@ -348,6 +348,7 @@ static int player_init_audio(PlayerContext *ctx) {
 }
 
 static enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts) {
+  (void)ctx;
   const enum AVPixelFormat *p;
   for (p = pix_fmts; *p != -1; p++) {
     if (*p == AV_PIX_FMT_VAAPI) {
