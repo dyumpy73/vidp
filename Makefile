@@ -1,39 +1,23 @@
-CC      ?= gcc
-PREFIX  ?= /usr/local
-BINDIR  ?= $(PREFIX)/bin
+CC = gcc
+CFLAGS = -O2 -Wall
+PKGS = libavformat libavcodec libavutil libswscale libswresample libass sdl2
+LIBS = $(shell pkg-config --cflags --libs $(PKGS)) -lm
 
-PKG_CFLAGS := $(shell pkg-config --cflags libavformat libavcodec libavutil libswscale libswresample libass sdl2)
-PKG_LIBS   := $(shell pkg-config --libs libavformat libavcodec libavutil libswscale libswresample libass sdl2) -lm
-
-CFLAGS  ?= -O2 -Wall -Wextra
-CFLAGS  += $(PKG_CFLAGS)
-LDFLAGS += $(PKG_LIBS)
-
-TARGET   = vidp
-SRC      = src/vidp.c
-OBJ      = $(SRC:.c=.o)
-
-.PHONY: all debug clean install uninstall
+TARGET = vidp
+SRC = src/vidp.c
 
 all: $(TARGET)
 
-
-$(TARGET): $(OBJ)
-	$(CC) $(OBJ) -o $@ $(LDFLAGS)
-
-
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-debug: CFLAGS := -g -O0 -Wall -Wextra -DDEBUG $(PKG_CFLAGS)
-debug: clean $(TARGET)
+$(TARGET): $(SRC)
+	$(CC) $(CFLAGS) $(SRC) -o $(TARGET) $(LIBS)
 
 install: $(TARGET)
-	install -d $(DESTDIR)$(BINDIR)
-	install -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/
+	install -Dm755 $(TARGET) /usr/local/bin/$(TARGET)
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/$(TARGET)
+	rm -f /usr/local/bin/$(TARGET)
 
 clean:
-	rm -f $(OBJ) $(TARGET)
+	rm -f $(TARGET)
+
+.PHONY: all install uninstall clean
