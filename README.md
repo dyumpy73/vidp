@@ -16,7 +16,7 @@ A lightweight, single-threaded media player built in C using **FFmpeg**, **SDL2*
 - **Advanced Subtitle Rendering**: Native ASS/SSA subtitle support with soft-shadows and styling powered by `libass`.
 - **A/V Synchronization**: Audio/Video clock synchronization algorithm with frame-dropping and latency compensation.
 - **Playlist & Directory Scanning**: Automatically builds and sorts playlists from directory inputs or multiple file arguments.
-- **Low Memory Overhead**: Conservative working set memory footprint (~150–170 MB) with deterministic allocation cleanup (`malloc_trim`).
+- **Low Memory Overhead**: Conservative working set memory footprint (~150–250 MB depending on codec and subtitle complexity) with deterministic allocation cleanup (`malloc_trim`).
 
 ---
 
