@@ -92,7 +92,7 @@ vidp episode1.mkv episode2.mkv episode3.mkv
 
 ## Technical Highlights
 
-- **Single-Threaded Event Loop**: The decoder, audio-push mechanism, subtitle pipeline, and GUI window event handling all reside in a unified loop to keep state transitions perfectly predictable.
+- **Single-Threaded Event Loop**: The decoder, audio-push mechanism, subtitle pipeline, and window event handling all reside in a unified loop to keep state transitions perfectly predictable.
 - **Memory Recycling**: Explicit resource teardown routines (`player_close_file`) free audio buffers, hardware textures, decoders, and force glibc arena compaction via `malloc_trim(0)` between track switches.
 
 ---
