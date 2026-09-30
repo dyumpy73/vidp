@@ -77,6 +77,8 @@ typedef struct {
   double first_video_time;
   int video_clock_started;
   double paused_started_wall;
+  AVBufferRef *hw_device_ctx;
+  int is_hw_accel;
 } PlayerContext;
 
 static double get_monotonic_time(void) {
@@ -331,6 +333,18 @@ static int player_init_audio(PlayerContext *ctx) {
   return 1;
 }
 
+static enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts) {
+  const enum AVPixelFormat *p;
+  for (p = pix_fmts; *p != -1; p++) {
+    if (*p == AV_PIX_FMT_VAAPI) {
+      return *p;
+    }
+  }
+
+  fprintf(stderr, "Warning: VAAPI pixel format not found, falling back to software decoding.\n");
+  return pix_fmts[0];
+}
+
 static void player_init_subtitles(PlayerContext *ctx) {
   if (ctx->subtitle_stream < 0) return;
 
@@ -392,6 +406,12 @@ static int player_open_file(PlayerContext *ctx, const char *filepath, int index,
   ctx->v_codec_ctx->thread_count = 2;
   ctx->v_codec_ctx->thread_type = FF_THREAD_FRAME;
 
+  if (av_hwdevice_ctx_create(&ctx->hw_device_ctx, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0) >= 0) {
+    ctx->v_codec_ctx->hw_device_ctx = av_buffer_ref(ctx->hw_device_ctx);
+    ctx->v_codec_ctx->get_format = get_hw_format;
+    ctx->is_hw_accel = 1;
+  }
+
   if (avcodec_open2(ctx->v_codec_ctx, v_codec, NULL) < 0) return 0;
 
   ctx->width = ctx->v_codec_ctx->width;
@@ -404,15 +424,13 @@ static int player_open_file(PlayerContext *ctx, const char *filepath, int index,
   ctx->frame_audio = av_frame_alloc();
   ctx->packet = av_packet_alloc();
 
-  if (ctx->v_codec_ctx->pix_fmt != AV_PIX_FMT_YUV420P) {
-    ctx->sws_ctx = sws_getContext(ctx->width, ctx->height, ctx->v_codec_ctx->pix_fmt,
-                                  ctx->width, ctx->height, AV_PIX_FMT_YUV420P,
-                                  SWS_BILINEAR, NULL, NULL, NULL);
-    ctx->frame_yuv = av_frame_alloc();
-    ctx->frame_yuv->format = AV_PIX_FMT_YUV420P;
-    ctx->frame_yuv->width = ctx->width;
-    ctx->frame_yuv->height = ctx->height;
-    av_frame_get_buffer(ctx->frame_yuv, 0);
+  ctx->frame_yuv = av_frame_alloc();
+  ctx->frame_yuv->format = AV_PIX_FMT_YUV420P;
+  ctx->frame_yuv->width = ctx->width;
+  ctx->frame_yuv->height = ctx->height;
+  if (av_frame_get_buffer(ctx->frame_yuv, 0) < 0) {
+    fprintf(stderr, "[VidP] Failed to allocate frame_yuv buffer!\n");
+    return 0;
   }
 
   char title[512];
@@ -421,7 +439,10 @@ static int player_open_file(PlayerContext *ctx, const char *filepath, int index,
 }
 
 static void player_close_file(PlayerContext *ctx) {
-  if (ctx->sws_ctx) sws_freeContext(ctx->sws_ctx);
+  if (ctx->sws_ctx) {
+    sws_freeContext(ctx->sws_ctx);
+    ctx->sws_ctx = NULL;
+  }
   if (ctx->frame_yuv) av_frame_free(&ctx->frame_yuv);
 
   if (ctx->ass_track) ass_free_track(ctx->ass_track);
@@ -442,6 +463,12 @@ static void player_close_file(PlayerContext *ctx) {
 
   if (ctx->v_codec_ctx) avcodec_free_context(&ctx->v_codec_ctx);
   if (ctx->a_codec_ctx) avcodec_free_context(&ctx->a_codec_ctx);
+
+  if (ctx->hw_device_ctx) {
+    av_buffer_unref(&ctx->hw_device_ctx);
+    ctx->hw_device_ctx = NULL;
+  }
+
   if (ctx->fmt_ctx) avformat_close_input(&ctx->fmt_ctx);
 
   if (ctx->texture) SDL_DestroyTexture(ctx->texture);
@@ -453,12 +480,7 @@ static void player_close_file(PlayerContext *ctx) {
 }
 
 static void player_render_current_frame(PlayerContext *ctx) {
-  AVFrame *render_frame = ctx->frame_video;
-  if (ctx->sws_ctx) {
-    sws_scale(ctx->sws_ctx, (const uint8_t * const *)ctx->frame_video->data, ctx->frame_video->linesize,
-              0, ctx->height, ctx->frame_yuv->data, ctx->frame_yuv->linesize);
-    render_frame = ctx->frame_yuv;
-  }
+  AVFrame *render_frame = ctx->frame_yuv ? ctx->frame_yuv : ctx->frame_video;
 
   SDL_UpdateYUVTexture(ctx->texture, NULL,
                        render_frame->data[0], render_frame->linesize[0],
@@ -503,6 +525,39 @@ static void player_process_video_packet(PlayerContext *ctx) {
   if (avcodec_send_packet(ctx->v_codec_ctx, ctx->packet) < 0) return;
 
   while (avcodec_receive_frame(ctx->v_codec_ctx, ctx->frame_video) == 0) {
+    AVFrame *sw_frame = NULL;
+    AVFrame *src_frame = ctx->frame_video;
+
+    if (ctx->v_codec_ctx->pix_fmt == AV_PIX_FMT_VAAPI) {
+      sw_frame = av_frame_alloc();
+      if (av_hwframe_transfer_data(sw_frame, ctx->frame_video, 0) < 0) {
+        fprintf(stderr, "[VidP] Failed transfer frame from GPU to CPU!\n");
+        av_frame_free(&sw_frame);
+        av_frame_unref(ctx->frame_video);
+        continue;
+      }
+      src_frame = sw_frame;
+    }
+
+    if (ctx->frame_yuv && src_frame->data[0] != NULL) {
+      ctx->sws_ctx = sws_getCachedContext(
+        ctx->sws_ctx,
+        ctx->width, ctx->height, src_frame->format,
+        ctx->width, ctx->height, AV_PIX_FMT_YUV420P,
+        SWS_BILINEAR, NULL, NULL, NULL
+      );
+
+      if (ctx->sws_ctx) {
+        sws_scale(
+          ctx->sws_ctx,
+          (const uint8_t * const *)src_frame->data, src_frame->linesize,
+          0, ctx->height,
+          ctx->frame_yuv->data, ctx->frame_yuv->linesize
+        );
+        ctx->frame_yuv->best_effort_timestamp = ctx->frame_video->best_effort_timestamp;
+      }
+    }
+
     AVStream *st = ctx->fmt_ctx->streams[ctx->video_stream];
     int64_t pts = ctx->frame_video->best_effort_timestamp;
 
@@ -512,6 +567,7 @@ static void player_process_video_packet(PlayerContext *ctx) {
       if (ctx->discard_until >= 0.0) {
         if (video_time < ctx->discard_until - 0.2) {
           av_frame_unref(ctx->frame_video);
+          if (sw_frame) av_frame_free(&sw_frame);
           continue;
         } else {
           ctx->discard_until = -1.0;
@@ -536,6 +592,7 @@ static void player_process_video_packet(PlayerContext *ctx) {
 
       if (delay < AV_SYNC_DROP_THRESHOLD) {
         av_frame_unref(ctx->frame_video);
+        if (sw_frame) av_frame_free(&sw_frame);
         continue;
       }
 
@@ -545,6 +602,11 @@ static void player_process_video_packet(PlayerContext *ctx) {
     }
 
     player_render_current_frame(ctx);
+
+    av_frame_unref(ctx->frame_video);
+    if (sw_frame) {
+      av_frame_free(&sw_frame);
+    }
   }
 }
 
@@ -568,15 +630,23 @@ static void player_process_audio_packet(PlayerContext *ctx) {
 
     int out_samples = av_rescale_rnd(swr_get_delay(ctx->swr_ctx, ctx->a_codec_ctx->sample_rate) + ctx->frame_audio->nb_samples,
                                      ctx->audio_spec.freq, ctx->a_codec_ctx->sample_rate, AV_ROUND_UP);
-    if (out_samples <= 0) continue;
+    if (out_samples <= 0) {
+      av_frame_unref(ctx->frame_audio);
+      continue;
+    }
 
     int len = swr_convert(ctx->swr_ctx, &ctx->audio_out_buffer, out_samples, (const uint8_t **)ctx->frame_audio->data, ctx->frame_audio->nb_samples);
-    if (len <= 0) continue;
+    if (len <= 0) {
+      av_frame_unref(ctx->frame_audio);
+      continue;
+    }
 
     int audio_data_size = av_samples_get_buffer_size(NULL, ctx->output_channels, len, AV_SAMPLE_FMT_S16, 1);
     if (audio_data_size > 0) {
       push_audio_data(&ctx->audio_buf, ctx->audio_out_buffer, audio_data_size);
     }
+
+    av_frame_unref(ctx->frame_audio);
   }
 }
 

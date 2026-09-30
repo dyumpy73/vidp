@@ -14,6 +14,7 @@ clean:
 
 install: $(TARGET)
 	install -m 755 $(TARGET) /usr/local/bin/
+	rm -f $(TARGET)
 
 uninstall:
 	rm -f /usr/local/bin/$(TARGET)

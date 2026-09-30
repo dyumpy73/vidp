@@ -51,7 +51,7 @@ make clean
 Alternatively, to compile manually without Make:
 
 ```bash
-gcc -O2 -Wall src/main.c -o vidp \
+gcc -O2 -Wall src/vidp.c -o vidp \
     $(pkg-config --cflags --libs libavcodec libavformat libswscale libswresample sdl2 libass) -lm
 ```
 
