@@ -61,6 +61,7 @@ typedef struct {
   ASS_Renderer *ass_renderer;
   ASS_Track *ass_track;
   SDL_Surface *sub_surf;
+  SDL_Texture *sub_tex;
 
   SDL_Window *window;
   SDL_Renderer *renderer;
@@ -79,6 +80,7 @@ typedef struct {
   double paused_started_wall;
   AVBufferRef *hw_device_ctx;
   int is_hw_accel;
+  int frame_counter;
 } PlayerContext;
 
 static double get_monotonic_time(void) {
@@ -220,10 +222,12 @@ static inline void blend_ass_pixel(uint32_t *pixel, SDL_PixelFormat *fmt, uint8_
 static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect) {
   if (!img || dest_rect->w <= 0 || dest_rect->h <= 0) return;
 
+  int surface_resized = 0;
   if (!ctx->sub_surf || ctx->sub_surf->w != dest_rect->w || ctx->sub_surf->h != dest_rect->h) {
     if (ctx->sub_surf) SDL_FreeSurface(ctx->sub_surf);
     ctx->sub_surf = SDL_CreateRGBSurfaceWithFormat(0, dest_rect->w, dest_rect->h, 32, SDL_PIXELFORMAT_RGBA32);
     if (!ctx->sub_surf) return;
+    surface_resized = 1;
   }
 
   SDL_FillRect(ctx->sub_surf, NULL, 0);
@@ -259,11 +263,21 @@ static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *des
     img = img->next;
   }
 
-  SDL_Texture *sub_tex = SDL_CreateTextureFromSurface(ctx->renderer, ctx->sub_surf);
-  if (sub_tex) {
-    SDL_SetTextureBlendMode(sub_tex, SDL_BLENDMODE_BLEND);
-    SDL_RenderCopy(ctx->renderer, sub_tex, NULL, dest_rect);
-    SDL_DestroyTexture(sub_tex);
+  if (surface_resized && ctx->sub_tex) {
+    SDL_DestroyTexture(ctx->sub_tex);
+    ctx->sub_tex = NULL;
+  }
+
+  if (!ctx->sub_tex) {
+    ctx->sub_tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, dest_rect->w, dest_rect->h);
+    if (ctx->sub_tex) {
+      SDL_SetTextureBlendMode(ctx->sub_tex, SDL_BLENDMODE_BLEND);
+    }
+  }
+
+  if (ctx->sub_tex) {
+    SDL_UpdateTexture(ctx->sub_tex, NULL, ctx->sub_surf->pixels, ctx->sub_surf->pitch);
+    SDL_RenderCopy(ctx->renderer, ctx->sub_tex, NULL, dest_rect);
   }
 }
 
@@ -356,6 +370,7 @@ static void player_init_subtitles(PlayerContext *ctx) {
   ass_set_hinting(ctx->ass_renderer, ASS_HINTING_LIGHT);
   ass_set_shaper(ctx->ass_renderer, ASS_SHAPING_COMPLEX);
   ass_set_fonts(ctx->ass_renderer, NULL, "Sans", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+  ass_set_cache_limits(ctx->ass_renderer, 2, 10);
   ctx->ass_track = ass_new_track(ctx->ass_library);
 
   if (sub_par->extradata && sub_par->extradata_size > 0) {
@@ -385,6 +400,7 @@ static int player_open_file(PlayerContext *ctx, const char *filepath, int index,
   ctx->video_stream = -1;
   ctx->audio_stream = -1;
   ctx->subtitle_stream = -1;
+  ctx->frame_counter = 0;
 
   if (avformat_open_input(&ctx->fmt_ctx, filepath, NULL, NULL) != 0) return 0;
   if (avformat_find_stream_info(ctx->fmt_ctx, NULL) < 0) return 0;
@@ -451,6 +467,10 @@ static void player_close_file(PlayerContext *ctx) {
   if (ctx->sub_surf) {
     SDL_FreeSurface(ctx->sub_surf);
     ctx->sub_surf = NULL;
+  }
+  if (ctx->sub_tex) {
+    SDL_DestroyTexture(ctx->sub_tex);
+    ctx->sub_tex = NULL;
   }
 
   if (ctx->audio_dev > 0) SDL_CloseAudioDevice(ctx->audio_dev);
@@ -531,7 +551,6 @@ static void player_process_video_packet(PlayerContext *ctx) {
     if (ctx->v_codec_ctx->pix_fmt == AV_PIX_FMT_VAAPI) {
       sw_frame = av_frame_alloc();
       if (av_hwframe_transfer_data(sw_frame, ctx->frame_video, 0) < 0) {
-        fprintf(stderr, "[VidP] Failed transfer frame from GPU to CPU!\n");
         av_frame_free(&sw_frame);
         av_frame_unref(ctx->frame_video);
         continue;
@@ -554,7 +573,6 @@ static void player_process_video_packet(PlayerContext *ctx) {
           0, ctx->height,
           ctx->frame_yuv->data, ctx->frame_yuv->linesize
         );
-        ctx->frame_yuv->best_effort_timestamp = ctx->frame_video->best_effort_timestamp;
       }
     }
 
@@ -606,6 +624,10 @@ static void player_process_video_packet(PlayerContext *ctx) {
     av_frame_unref(ctx->frame_video);
     if (sw_frame) {
       av_frame_free(&sw_frame);
+    }
+
+    if (++ctx->frame_counter % 300 == 0) {
+      malloc_trim(0);
     }
   }
 }
