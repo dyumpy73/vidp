@@ -43,7 +43,7 @@ You can build the project using `make`:
 
 ```bash
 # Build the executable
-make
+make install
 
 # Clean build artifacts
 make clean
