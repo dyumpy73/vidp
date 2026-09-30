@@ -64,13 +64,13 @@ Pass one or more video files, or a folder containing media files:
 
 ```bash
 # Play a single file
-./vidp path/to/video.mkv
+vidp path/to/video.mkv
 
 # Play an entire directory
-./vidp path/to/anime_folder/
+vidp path/to/anime_folder/
 
 # Play multiple specific files
-./vidp episode1.mkv episode2.mkv episode3.mkv
+vidp episode1.mkv episode2.mkv episode3.mkv
 ```
 
 ---
