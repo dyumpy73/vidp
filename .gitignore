@@ -1,0 +1,14 @@
+# Executable
+vidp
+*.out
+
+# Object & Build files
+*.o
+*.a
+*.so
+
+# Editor & IDE
+.vscode/
+.idea/
+*.swp
+*~
