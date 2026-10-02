@@ -86,6 +86,8 @@ vidp episode1.mkv episode2.mkv episode3.mkv
 | **Down Arrow** | Decrease volume (-10%) |
 | **N** | Next track in playlist |
 | **P** | Previous track in playlist |
+| **V** | Toggle subtitle |
+| **S** | Switch subtitle stream |
 | **Esc** | Quit player |
 
 ---

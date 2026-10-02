@@ -40,6 +40,10 @@ typedef struct {
   int audio_stream;
   int subtitle_stream;
 
+  int subtitle_streams[10];
+  int subtitle_stream_count;
+  int current_subtitle_idx;
+
   AVCodecContext *v_codec_ctx;
   AVCodecContext *a_codec_ctx;
 
@@ -81,6 +85,7 @@ typedef struct {
   AVBufferRef *hw_device_ctx;
   int is_hw_accel;
   int frame_counter;
+  int subtitle_visible;
 } PlayerContext;
 
 static double get_monotonic_time(void) {
@@ -360,6 +365,26 @@ static enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelF
   return pix_fmts[0];
 }
 
+static void player_extract_attached_fonts(PlayerContext *ctx) {
+  if (!ctx->fmt_ctx || !ctx->ass_library) return;
+
+  for (unsigned int i = 0; i < ctx->fmt_ctx->nb_streams; i++) {
+    AVStream *st = ctx->fmt_ctx->streams[i];
+    if (st->codecpar->codec_type == AVMEDIA_TYPE_ATTACHMENT) {
+      AVDictionaryEntry *filename_tag = av_dict_get(st->metadata, "filename", NULL, 0);
+      if (filename_tag && filename_tag->value) {
+        const char *filename = filename_tag->value;
+        if (strstr(filename, ".ttf") || strstr(filename, ".otf") || strstr(filename, ".TTF") || strstr(filename, ".OTF")) {
+          AVPacket *pkt = &st->attached_pic;
+          if (pkt->data && pkt->size > 0) {
+            ass_add_font(ctx->ass_library, (char *)filename, (char *)pkt->data, pkt->size);
+          }
+        }
+      }
+    }
+  }
+}
+
 static void player_init_subtitles(PlayerContext *ctx) {
   if (ctx->subtitle_stream < 0) return;
 
@@ -367,11 +392,13 @@ static void player_init_subtitles(PlayerContext *ctx) {
   ctx->ass_library = ass_library_init();
   if (!ctx->ass_library) return;
 
+  player_extract_attached_fonts(ctx);
+
   ctx->ass_renderer = ass_renderer_init(ctx->ass_library);
-  ass_set_hinting(ctx->ass_renderer, ASS_HINTING_LIGHT);
+  ass_set_hinting(ctx->ass_renderer, ASS_HINTING_NONE);
   ass_set_shaper(ctx->ass_renderer, ASS_SHAPING_COMPLEX);
-  ass_set_fonts(ctx->ass_renderer, NULL, "Sans", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
-  ass_set_cache_limits(ctx->ass_renderer, 2, 10);
+  ass_set_fonts(ctx->ass_renderer, NULL, NULL, ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+  ass_set_cache_limits(ctx->ass_renderer, 4, 16); // 2, 10
   ctx->ass_track = ass_new_track(ctx->ass_library);
 
   if (sub_par->extradata && sub_par->extradata_size > 0) {
@@ -402,7 +429,10 @@ static int player_open_file(PlayerContext *ctx, const char *filepath, int index,
   ctx->audio_stream = -1;
   ctx->subtitle_stream = -1;
   ctx->frame_counter = 0;
-
+  ctx->subtitle_visible = 1;
+  ctx->subtitle_stream_count = 0;
+  ctx->current_subtitle_idx = -1;
+  
   if (avformat_open_input(&ctx->fmt_ctx, filepath, NULL, NULL) != 0) return 0;
   if (avformat_find_stream_info(ctx->fmt_ctx, NULL) < 0) return 0;
 
@@ -410,7 +440,16 @@ static int player_open_file(PlayerContext *ctx, const char *filepath, int index,
     AVCodecParameters *codecpar = ctx->fmt_ctx->streams[i]->codecpar;
     if (codecpar->codec_type == AVMEDIA_TYPE_VIDEO && ctx->video_stream < 0) ctx->video_stream = i;
     if (codecpar->codec_type == AVMEDIA_TYPE_AUDIO && ctx->audio_stream < 0) ctx->audio_stream = i;
-    if (codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE && ctx->subtitle_stream < 0) ctx->subtitle_stream = i;
+    if (codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) {
+      if (ctx->subtitle_stream_count < 10) {
+        ctx->subtitle_streams[ctx->subtitle_stream_count++] = i;
+      }
+    }
+  }
+
+  if (ctx->subtitle_stream_count > 0) {
+    ctx->current_subtitle_idx = 0;
+    ctx->subtitle_stream = ctx->subtitle_streams[0];
   }
 
   if (ctx->video_stream < 0) return 0;
@@ -529,7 +568,7 @@ static void player_render_current_frame(PlayerContext *ctx) {
   SDL_RenderClear(ctx->renderer);
   SDL_RenderCopy(ctx->renderer, ctx->texture, NULL, &dest_rect);
 
-  if (ctx->ass_renderer && ctx->ass_track) {
+  if (ctx->subtitle_visible && ctx->ass_renderer && ctx->ass_track) {
     int changed = 0;
     int64_t now_ms = (int64_t)(ctx->last_video_time * 1000);
     ass_set_frame_size(ctx->ass_renderer, dest_rect.w, dest_rect.h);
@@ -674,7 +713,10 @@ static void player_process_audio_packet(PlayerContext *ctx) {
 }
 
 static void player_process_subtitle_packet(PlayerContext *ctx) {
-  if (!ctx->ass_track) return;
+  if (!ctx->ass_track || ctx->subtitle_stream < 0) return;
+
+  if (ctx->packet->stream_index != ctx->subtitle_stream) return;
+
   if (ctx->packet->pts != AV_NOPTS_VALUE) {
     double sub_pts = ctx->packet->pts * av_q2d(ctx->fmt_ctx->streams[ctx->subtitle_stream]->time_base);
     double duration_sub = ctx->packet->duration * av_q2d(ctx->fmt_ctx->streams[ctx->subtitle_stream]->time_base);
@@ -683,6 +725,37 @@ static void player_process_subtitle_packet(PlayerContext *ctx) {
     if (dur_ms <= 0) dur_ms = 5000;
 
     ass_process_chunk(ctx->ass_track, (char *)ctx->packet->data, ctx->packet->size, start_ms, dur_ms);
+  }
+}
+
+static void player_switch_subtitle(PlayerContext *ctx) {
+  if (ctx->subtitle_stream_count <= 0) {
+    printf("[VidP] No subtitles available in this file.\n");
+    return;
+  }
+
+  ctx->current_subtitle_idx++;
+  if (ctx->current_subtitle_idx >= ctx->subtitle_stream_count) {
+    ctx->current_subtitle_idx = -1;
+    ctx->subtitle_stream = -1;
+    printf("[VidP] Subtitle: OFF (Disabled)\n");
+  } else {
+    ctx->subtitle_stream = ctx->subtitle_streams[ctx->current_subtitle_idx];
+    printf("[VidP] Switched to Subtitle stream index: %d (Total available: %d)\n", ctx->current_subtitle_idx + 1, ctx->subtitle_stream_count);
+  }
+
+  if (ctx->ass_track) {
+    ass_free_track(ctx->ass_track);
+    ctx->ass_track = NULL;
+  }
+
+  if (ctx->current_subtitle_idx >= 0) {
+    ctx->ass_track = ass_new_track(ctx->ass_library);
+    int stream_idx = ctx->subtitle_streams[ctx->current_subtitle_idx];
+    AVCodecParameters *sub_par = ctx->fmt_ctx->streams[stream_idx]->codecpar;
+    if (sub_par->extradata && sub_par->extradata_size > 0) {
+      ass_process_codec_private(ctx->ass_track, (char *)sub_par->extradata, sub_par->extradata_size);
+    }
   }
 }
 
@@ -722,6 +795,13 @@ static void player_handle_events(PlayerContext *ctx, int *global_quit, int *play
         case SDLK_p:
           *playlist_index = (*playlist_index > 0) ? *playlist_index - 2 : -1;
           ctx->file_finished = 1;
+          break;
+        case SDLK_v:
+          ctx->subtitle_visible = !ctx->subtitle_visible;
+          printf("[VidP] Substitle %s\n", ctx->subtitle_visible ? "Visible (ON)" : "Hidden (OFF)");
+          break;
+        case SDLK_s:
+          player_switch_subtitle(ctx);
           break;
       }
     }
