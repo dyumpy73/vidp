@@ -596,6 +596,10 @@ static void player_process_video_packet(PlayerContext *ctx) {
 
     if (ctx->v_codec_ctx->pix_fmt == AV_PIX_FMT_VAAPI) {
       sw_frame = av_frame_alloc();
+      if (!sw_frame) {
+        av_frame_unref(ctx->frame_video);
+        return;
+      }
       if (av_hwframe_transfer_data(sw_frame, ctx->frame_video, 0) < 0) {
         av_frame_free(&sw_frame);
         av_frame_unref(ctx->frame_video);
@@ -625,7 +629,7 @@ static void player_process_video_packet(PlayerContext *ctx) {
         SWS_BILINEAR, NULL, NULL, NULL
       );
 
-      if (ctx->sws_ctx && ctx->frame_yuv) {
+      if (ctx->sws_ctx && ctx->frame_yuv && ctx->frame_yuv->data[0]) {
         sws_scale(
           ctx->sws_ctx,
           (const uint8_t * const *)src_frame->data, src_frame->linesize,
@@ -737,9 +741,10 @@ static void player_process_subtitle_packet(PlayerContext *ctx) {
   if (!ctx->ass_track || ctx->subtitle_stream < 0) return;
 
   if (ctx->packet->stream_index != ctx->subtitle_stream) return;
+  int64_t pts = (ctx->packet->pts != AV_NOPTS_VALUE) ? ctx->packet->pts : ctx->packet->dts;
 
-  if (ctx->packet->pts != AV_NOPTS_VALUE) {
-    double sub_pts = ctx->packet->pts * av_q2d(ctx->fmt_ctx->streams[ctx->subtitle_stream]->time_base);
+  if (pts != AV_NOPTS_VALUE) {
+    double sub_pts = pts * av_q2d(ctx->fmt_ctx->streams[ctx->subtitle_stream]->time_base);
     double duration_sub = ctx->packet->duration * av_q2d(ctx->fmt_ctx->streams[ctx->subtitle_stream]->time_base);
     int64_t start_ms = (int64_t)(sub_pts * 1000);
     int64_t dur_ms = (int64_t)(duration_sub * 1000);
