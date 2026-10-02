@@ -381,7 +381,7 @@ static enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelF
 }
 
 static void player_extract_attached_fonts(PlayerContext *ctx) {
-  if (!ctx->fmt_ctx || !ctx->ass_library || ctx->subtitle_stream < 0) return;
+  if (!ctx->fmt_ctx || !ctx->ass_library) return;
 
   for (unsigned int i = 0; i < ctx->fmt_ctx->nb_streams; i++) {
     AVStream *st = ctx->fmt_ctx->streams[i];
@@ -389,11 +389,8 @@ static void player_extract_attached_fonts(PlayerContext *ctx) {
       AVDictionaryEntry *filename_tag = av_dict_get(st->metadata, "filename", NULL, 0);
       if (filename_tag && filename_tag->value) {
         const char *filename = filename_tag->value;
-        if (strstr(filename, ".ttf") || strstr(filename, ".otf") || strstr(filename, ".TTF") || strstr(filename, ".OTF")) {
-          AVPacket *pkt = &st->attached_pic;
-          if (pkt->data && pkt->size > 0) {
-            ass_add_font(ctx->ass_library, (char *)filename, (char *)pkt->data, pkt->size);
-          }
+        if (st->codecpar->extradata && st->codecpar->extradata_size > 0) {
+          ass_add_font(ctx->ass_library, (char *)filename, (char *)st->codecpar->extradata, st->codecpar->extradata_size);
         }
       }
     }
@@ -410,9 +407,10 @@ static void player_init_subtitles(PlayerContext *ctx) {
   player_extract_attached_fonts(ctx);
 
   ctx->ass_renderer = ass_renderer_init(ctx->ass_library);
+  ass_set_storage_size(ctx->ass_renderer, ctx->width, ctx->height);
   ass_set_hinting(ctx->ass_renderer, ASS_HINTING_NONE);
   ass_set_shaper(ctx->ass_renderer, ASS_SHAPING_COMPLEX);
-  ass_set_fonts(ctx->ass_renderer, NULL, NULL, ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+  ass_set_fonts(ctx->ass_renderer, NULL, "Sans", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
   ass_set_cache_limits(ctx->ass_renderer, 1, 1);
   ctx->ass_track = ass_new_track(ctx->ass_library);
 
