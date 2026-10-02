@@ -6,7 +6,10 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <strings.h>
+
+#if defined(__linux__) && defined(__GLIBC__)
 #include <malloc.h>
+#endif
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -17,8 +20,7 @@
 #include <SDL2/SDL.h>
 #include <ass/ass.h>
 
-#define AUDIO_BUFFER_SIZE       (1024 * 1024)
-#define MAX_AUDIO_SAMPLES       192000
+#define AUDIO_BUFFER_SIZE       (512 * 1024)
 #define SEEK_STEP_SEC           10.0
 #define AV_SYNC_THRESHOLD_MAX   0.100
 #define AV_SYNC_THRESHOLD_MIN  -0.100
@@ -59,6 +61,7 @@ typedef struct {
   SDL_AudioDeviceID audio_dev;
   SDL_AudioSpec audio_spec;
   uint8_t *audio_out_buffer;
+  unsigned int audio_out_buffer_size;
   int output_channels;
 
   ASS_Library *ass_library;
@@ -88,6 +91,12 @@ typedef struct {
   int subtitle_visible;
 } PlayerContext;
 
+static inline void trim_memory(void) {
+#if defined(__linux__) && defined(__GLIBC__)
+  malloc_trim(0);
+#endif
+}
+
 static double get_monotonic_time(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -107,7 +116,9 @@ static int compare_strings(const void *a, const void *b) {
 }
 
 static void add_to_playlist(char ***playlist, int *count, const char *filepath) {
-  *playlist = realloc(*playlist, sizeof(char *) * (*count + 1));
+  char **new_playlist = realloc(*playlist, sizeof(char *) * (*count + 1));
+  if (!new_playlist) return;
+  *playlist = new_playlist;
   (*playlist)[*count] = strdup(filepath);
   (*count)++;
 }
@@ -150,6 +161,7 @@ static void build_playlist(int argc, char *argv[], char ***playlist, int *count)
 }
 
 static void free_playlist(char **playlist, int count) {
+  if (!playlist) return;
   for (int i = 0; i < count; i++) {
     free(playlist[i]);
   }
@@ -181,6 +193,13 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
 
 static void push_audio_data(AudioBuffer *audio_buf, const uint8_t *data, size_t len) {
   SDL_LockMutex(audio_buf->lock);
+
+  int retries = 20;
+  while (audio_buf->size + len > AUDIO_BUFFER_SIZE && retries-- > 0) {
+    SDL_UnlockMutex(audio_buf->lock);
+    SDL_Delay(1);
+    SDL_LockMutex(audio_buf->lock);
+  }
 
   if (audio_buf->size + len <= AUDIO_BUFFER_SIZE) {
     if (audio_buf->write_pos + len <= AUDIO_BUFFER_SIZE) {
@@ -347,8 +366,6 @@ static int player_init_audio(PlayerContext *ctx) {
   if (!ctx->swr_ctx || swr_init(ctx->swr_ctx) < 0) return 0;
 
   SDL_PauseAudioDevice(ctx->audio_dev, 0);
-  av_samples_alloc(&ctx->audio_out_buffer, NULL, ctx->output_channels, MAX_AUDIO_SAMPLES, AV_SAMPLE_FMT_S16, 0);
-
   return 1;
 }
 
@@ -360,13 +377,11 @@ static enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelF
       return *p;
     }
   }
-
-  fprintf(stderr, "Warning: VAAPI pixel format not found, falling back to software decoding.\n");
   return pix_fmts[0];
 }
 
 static void player_extract_attached_fonts(PlayerContext *ctx) {
-  if (!ctx->fmt_ctx || !ctx->ass_library) return;
+  if (!ctx->fmt_ctx || !ctx->ass_library || ctx->subtitle_stream < 0) return;
 
   for (unsigned int i = 0; i < ctx->fmt_ctx->nb_streams; i++) {
     AVStream *st = ctx->fmt_ctx->streams[i];
@@ -398,7 +413,7 @@ static void player_init_subtitles(PlayerContext *ctx) {
   ass_set_hinting(ctx->ass_renderer, ASS_HINTING_NONE);
   ass_set_shaper(ctx->ass_renderer, ASS_SHAPING_COMPLEX);
   ass_set_fonts(ctx->ass_renderer, NULL, NULL, ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
-  ass_set_cache_limits(ctx->ass_renderer, 4, 16); // 2, 10
+  ass_set_cache_limits(ctx->ass_renderer, 1, 1);
   ctx->ass_track = ass_new_track(ctx->ass_library);
 
   if (sub_par->extradata && sub_par->extradata_size > 0) {
@@ -432,6 +447,10 @@ static int player_open_file(PlayerContext *ctx, const char *filepath, int index,
   ctx->subtitle_visible = 1;
   ctx->subtitle_stream_count = 0;
   ctx->current_subtitle_idx = -1;
+  ctx->fmt_ctx = avformat_alloc_context();
+  if (!ctx->fmt_ctx) return 0; 
+  ctx->fmt_ctx->probesize = 1024 * 1024;
+  ctx->fmt_ctx->max_analyze_duration = 1000000;
   
   if (avformat_open_input(&ctx->fmt_ctx, filepath, NULL, NULL) != 0) return 0;
   if (avformat_find_stream_info(ctx->fmt_ctx, NULL) < 0) return 0;
@@ -480,15 +499,6 @@ static int player_open_file(PlayerContext *ctx, const char *filepath, int index,
   ctx->frame_audio = av_frame_alloc();
   ctx->packet = av_packet_alloc();
 
-  ctx->frame_yuv = av_frame_alloc();
-  ctx->frame_yuv->format = AV_PIX_FMT_YUV420P;
-  ctx->frame_yuv->width = ctx->width;
-  ctx->frame_yuv->height = ctx->height;
-  if (av_frame_get_buffer(ctx->frame_yuv, 0) < 0) {
-    fprintf(stderr, "[VidP] Failed to allocate frame_yuv buffer!\n");
-    return 0;
-  }
-
   char title[512];
   snprintf(title, sizeof(title), "VidP [%d/%d] - %s", index + 1, total, filepath);
   return player_init_display(ctx, title);
@@ -536,12 +546,10 @@ static void player_close_file(PlayerContext *ctx) {
   if (ctx->window) SDL_DestroyWindow(ctx->window);
   if (ctx->audio_buf.lock) SDL_DestroyMutex(ctx->audio_buf.lock);
 
-  malloc_trim(0);
+  trim_memory();
 }
 
-static void player_render_current_frame(PlayerContext *ctx) {
-  AVFrame *render_frame = ctx->frame_yuv ? ctx->frame_yuv : ctx->frame_video;
-
+static void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
   SDL_UpdateYUVTexture(ctx->texture, NULL,
                        render_frame->data[0], render_frame->linesize[0],
                        render_frame->data[1], render_frame->linesize[1],
@@ -598,21 +606,35 @@ static void player_process_video_packet(PlayerContext *ctx) {
       src_frame = sw_frame;
     }
 
-    if (ctx->frame_yuv && src_frame->data[0] != NULL) {
+    AVFrame *render_frame = src_frame;
+
+    if (src_frame->format != AV_PIX_FMT_YUV420P && src_frame->data[0] != NULL) {
+      if (!ctx->frame_yuv || ctx->frame_yuv->width != src_frame->width || ctx->frame_yuv->height != src_frame->height) {
+        if (ctx->frame_yuv) av_frame_free(&ctx->frame_yuv);
+        ctx->frame_yuv = av_frame_alloc();
+        ctx->frame_yuv->format = AV_PIX_FMT_YUV420P;
+        ctx->frame_yuv->width = src_frame->width;
+        ctx->frame_yuv->height = src_frame->height;
+        if (av_frame_get_buffer(ctx->frame_yuv, 0) < 0) {
+          fprintf(stderr, "[VidP] Failed to allocate conversion frame_yuv buffer!\n");
+        }
+      }
+
       ctx->sws_ctx = sws_getCachedContext(
         ctx->sws_ctx,
-        ctx->width, ctx->height, src_frame->format,
-        ctx->width, ctx->height, AV_PIX_FMT_YUV420P,
+        src_frame->width, src_frame->height, src_frame->format,
+        src_frame->width, src_frame->height, AV_PIX_FMT_YUV420P,
         SWS_BILINEAR, NULL, NULL, NULL
       );
 
-      if (ctx->sws_ctx) {
+      if (ctx->sws_ctx && ctx->frame_yuv) {
         sws_scale(
           ctx->sws_ctx,
           (const uint8_t * const *)src_frame->data, src_frame->linesize,
-          0, ctx->height,
+          0, src_frame->height,
           ctx->frame_yuv->data, ctx->frame_yuv->linesize
         );
+        render_frame = ctx->frame_yuv;
       }
     }
 
@@ -659,15 +681,13 @@ static void player_process_video_packet(PlayerContext *ctx) {
       }
     }
 
-    player_render_current_frame(ctx);
+    player_render_current_frame(ctx, render_frame);
 
     av_frame_unref(ctx->frame_video);
-    if (sw_frame) {
-      av_frame_free(&sw_frame);
-    }
+    if (sw_frame) av_frame_free(&sw_frame);
 
     if (++ctx->frame_counter % 300 == 0) {
-      malloc_trim(0);
+      trim_memory();
     }
   }
 }
@@ -697,15 +717,18 @@ static void player_process_audio_packet(PlayerContext *ctx) {
       continue;
     }
 
-    int len = swr_convert(ctx->swr_ctx, &ctx->audio_out_buffer, out_samples, (const uint8_t **)ctx->frame_audio->data, ctx->frame_audio->nb_samples);
-    if (len <= 0) {
-      av_frame_unref(ctx->frame_audio);
-      continue;
-    }
-
-    int audio_data_size = av_samples_get_buffer_size(NULL, ctx->output_channels, len, AV_SAMPLE_FMT_S16, 1);
-    if (audio_data_size > 0) {
-      push_audio_data(&ctx->audio_buf, ctx->audio_out_buffer, audio_data_size);
+    int req_buf_size = av_samples_get_buffer_size(NULL, ctx->output_channels, out_samples, AV_SAMPLE_FMT_S16, 1);
+    if (req_buf_size > 0) {
+      av_fast_malloc(&ctx->audio_out_buffer, &ctx->audio_out_buffer_size, req_buf_size);
+      if (ctx->audio_out_buffer) {
+        int len = swr_convert(ctx->swr_ctx, &ctx->audio_out_buffer, out_samples, (const uint8_t **)ctx->frame_audio->data, ctx->frame_audio->nb_samples);
+        if (len > 0) {
+          int real_size = av_samples_get_buffer_size(NULL, ctx->output_channels, len, AV_SAMPLE_FMT_S16, 1);
+          if (real_size > 0) {
+            push_audio_data(&ctx->audio_buf, ctx->audio_out_buffer, real_size);
+          }
+        }
+      }
     }
 
     av_frame_unref(ctx->frame_audio);
@@ -778,10 +801,14 @@ static void player_handle_events(PlayerContext *ctx, int *global_quit, int *play
           if (ctx->audio_dev > 0) SDL_PauseAudioDevice(ctx->audio_dev, ctx->paused);
           break;
         case SDLK_UP:
+          SDL_LockMutex(ctx->audio_buf.lock);
           ctx->audio_buf.volume = (ctx->audio_buf.volume + 0.1f > 1.0f) ? 1.0f : ctx->audio_buf.volume + 0.1f;
+          SDL_UnlockMutex(ctx->audio_buf.lock);
           break;
         case SDLK_DOWN:
+          SDL_LockMutex(ctx->audio_buf.lock);
           ctx->audio_buf.volume = (ctx->audio_buf.volume - 0.1f < 0.0f) ? 0.0f : ctx->audio_buf.volume - 0.1f;
+          SDL_UnlockMutex(ctx->audio_buf.lock);
           break;
         case SDLK_RIGHT:
           player_do_seek(ctx, ctx->last_video_time + SEEK_STEP_SEC);
@@ -798,7 +825,7 @@ static void player_handle_events(PlayerContext *ctx, int *global_quit, int *play
           break;
         case SDLK_v:
           ctx->subtitle_visible = !ctx->subtitle_visible;
-          printf("[VidP] Substitle %s\n", ctx->subtitle_visible ? "Visible (ON)" : "Hidden (OFF)");
+          printf("[VidP] Subtitle %s\n", ctx->subtitle_visible ? "Visible (ON)" : "Hidden (OFF)");
           break;
         case SDLK_s:
           player_switch_subtitle(ctx);
@@ -815,15 +842,6 @@ static void player_run_loop(PlayerContext *ctx, int *global_quit, int *playlist_
     if (*global_quit || ctx->file_finished) break;
     if (ctx->paused) {
       SDL_Delay(10);
-      continue;
-    }
-
-    SDL_LockMutex(ctx->audio_buf.lock);
-    size_t current_audio_size = ctx->audio_buf.size;
-    SDL_UnlockMutex(ctx->audio_buf.lock);
-
-    if (current_audio_size > (AUDIO_BUFFER_SIZE - 65536)) {
-      SDL_Delay(5);
       continue;
     }
 
@@ -845,6 +863,11 @@ static void player_run_loop(PlayerContext *ctx, int *global_quit, int *playlist_
 }
 
 int main(int argc, char *argv[]) {
+#if defined(__linux__) && defined(__GLIBC__)
+  mallopt(M_TRIM_THRESHOLD, 64 * 1024);
+  mallopt(M_MMAP_THRESHOLD, 128 * 1024);
+#endif
+
   if (argc < 2) {
     printf("Usage: %s <file_or_directory> [file2 file3 ...]\n", argv[0]);
     return -1;
