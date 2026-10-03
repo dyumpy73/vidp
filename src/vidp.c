@@ -89,6 +89,7 @@ typedef struct {
   int is_hw_accel;
   int frame_counter;
   int subtitle_visible;
+  uint32_t current_tex_format;
 } PlayerContext;
 
 static inline void trim_memory(void) {
@@ -246,54 +247,78 @@ static inline void blend_ass_pixel(uint32_t *pixel, SDL_PixelFormat *fmt, uint8_
 static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect) {
   if (!img || dest_rect->w <= 0 || dest_rect->h <= 0) return;
 
-  int surface_resized = 0;
-  if (!ctx->sub_surf || ctx->sub_surf->w != dest_rect->w || ctx->sub_surf->h != dest_rect->h) {
+  int min_x = dest_rect->w, min_y = dest_rect->h;
+  int max_x = 0, max_y = 0;
+
+  ASS_Image *curr = img;
+  while (curr) {
+    if (curr->type != 3 && curr->w > 0 && curr->h > 0) {
+      if (curr->dst_x < min_x) min_x = curr->dst_x;
+      if (curr->dst_y < min_y) min_y = curr->dst_y;
+      if (curr->dst_x + curr->w > max_x) max_x = curr->dst_x + curr->w;
+      if (curr->dst_y + curr->h > max_y) max_y = curr->dst_y + curr->h;
+    }
+    curr = curr->next;
+  }
+
+  if (max_x <= min_x || max_y <= min_y) return;
+
+  if (min_x < 0) min_x = 0;
+  if (min_y < 0) min_y = 0;
+  if (max_x > dest_rect->w) max_x = dest_rect->w;
+  if (max_y > dest_rect->h) max_y = dest_rect->h;
+
+  int bbox_w = max_x - min_x;
+  int bbox_h = max_y - min_y;
+  if (bbox_w <= 0 || bbox_h <= 0) return;
+
+  if (!ctx->sub_surf || ctx->sub_surf->w != bbox_w || ctx->sub_surf->h != bbox_h) {
     if (ctx->sub_surf) SDL_FreeSurface(ctx->sub_surf);
-    ctx->sub_surf = SDL_CreateRGBSurfaceWithFormat(0, dest_rect->w, dest_rect->h, 32, SDL_PIXELFORMAT_RGBA32);
+    ctx->sub_surf = SDL_CreateRGBSurfaceWithFormat(0, bbox_w, bbox_h, 32, SDL_PIXELFORMAT_RGBA32);
     if (!ctx->sub_surf) return;
-    surface_resized = 1;
+
+    if (ctx->sub_tex) {
+      SDL_DestroyTexture(ctx->sub_tex);
+      ctx->sub_tex = NULL;
+    }
   }
 
   SDL_FillRect(ctx->sub_surf, NULL, 0);
+  uint32_t *pixels = (uint32_t *)ctx->sub_surf->pixels;
 
-  while (img) {
-    if (img->type != 3 && img->w > 0 && img->h > 0) {
-      uint8_t r = (img->color >> 24) & 0xFF;
-      uint8_t g = (img->color >> 16) & 0xFF;
-      uint8_t b = (img->color >> 8) & 0xFF;
-      uint8_t a = 255 - (img->color & 0xFF);
+  curr = img;
+  while (curr) {
+    if (curr->type != 3 && curr->w > 0 && curr->h > 0) {
+      uint8_t r = (curr->color >> 24) & 0xFF;
+      uint8_t g = (curr->color >> 16) & 0xFF;
+      uint8_t b = (curr->color >> 8) & 0xFF;
+      uint8_t a = 255 - (curr->color & 0xFF);
 
       if (a > 0) {
-        uint32_t *pixels = (uint32_t *)ctx->sub_surf->pixels;
-        for (int y = 0; y < img->h; y++) {
-          int dst_y = img->dst_y + y;
-          if (dst_y < 0 || dst_y >= dest_rect->h) continue;
+        for (int y = 0; y < curr->h; y++) {
+          int dst_y = (curr->dst_y + y) - min_y;
+          if (dst_y < 0 || dst_y >= bbox_h) continue;
 
-          for (int x = 0; x < img->w; x++) {
-            int dst_x = img->dst_x + x;
-            if (dst_x < 0 || dst_x >= dest_rect->w) continue;
+          for (int x = 0; x < curr->w; x++) {
+            int dst_x = (curr->dst_x + x) - min_x;
+            if (dst_x < 0 || dst_x >= bbox_w) continue;
 
-            uint8_t alpha = img->bitmap[y * img->stride + x];
+            uint8_t alpha = curr->bitmap[y * curr->stride + x];
             if (alpha == 0) continue;
 
             uint8_t final_a = (uint8_t)((alpha * a) / 255);
-            int idx = dst_y * dest_rect->w + dst_x;
+            int idx = dst_y * bbox_w + dst_x;
 
             blend_ass_pixel(&pixels[idx], ctx->sub_surf->format, r, g, b, final_a);
           }
         }
       }
     }
-    img = img->next;
-  }
-
-  if (surface_resized && ctx->sub_tex) {
-    SDL_DestroyTexture(ctx->sub_tex);
-    ctx->sub_tex = NULL;
+    curr = curr->next;
   }
 
   if (!ctx->sub_tex) {
-    ctx->sub_tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, dest_rect->w, dest_rect->h);
+    ctx->sub_tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, bbox_w, bbox_h);
     if (ctx->sub_tex) {
       SDL_SetTextureBlendMode(ctx->sub_tex, SDL_BLENDMODE_BLEND);
     }
@@ -301,7 +326,8 @@ static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *des
 
   if (ctx->sub_tex) {
     SDL_UpdateTexture(ctx->sub_tex, NULL, ctx->sub_surf->pixels, ctx->sub_surf->pitch);
-    SDL_RenderCopy(ctx->renderer, ctx->sub_tex, NULL, dest_rect);
+    SDL_Rect target_rect = { dest_rect->x + min_x, dest_rect->y + min_y, bbox_w, bbox_h };
+    SDL_RenderCopy(ctx->renderer, ctx->sub_tex, NULL, &target_rect);
   }
 }
 
@@ -429,6 +455,9 @@ static int player_init_display(PlayerContext *ctx, const char *title) {
   if (!ctx->renderer) return 0;
 
   ctx->texture = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, ctx->width, ctx->height);
+  if (ctx->texture) {
+    SDL_SetTextureScaleMode(ctx->texture, SDL_ScaleModeLinear);
+  }
   return ctx->texture != NULL;
 }
 
@@ -548,10 +577,30 @@ static void player_close_file(PlayerContext *ctx) {
 }
 
 static void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
-  SDL_UpdateYUVTexture(ctx->texture, NULL,
-                       render_frame->data[0], render_frame->linesize[0],
-                       render_frame->data[1], render_frame->linesize[1],
-                       render_frame->data[2], render_frame->linesize[2]);
+  uint32_t req_format = SDL_PIXELFORMAT_IYUV;
+  if (render_frame->format == AV_PIX_FMT_NV12) {
+    req_format = SDL_PIXELFORMAT_NV12;
+  }
+
+  if (!ctx->texture || ctx->current_tex_format != req_format) {
+    if (ctx->texture) SDL_DestroyTexture(ctx->texture);
+    ctx->texture = SDL_CreateTexture(ctx->renderer, req_format, SDL_TEXTUREACCESS_STREAMING, ctx->width, ctx->height);
+    ctx->current_tex_format = req_format;
+    if (ctx->texture) {
+      SDL_SetTextureScaleMode(ctx->texture, SDL_ScaleModeLinear);
+    }
+  }
+
+  if (req_format == SDL_PIXELFORMAT_NV12) {
+    SDL_UpdateNVTexture(ctx->texture, NULL,
+                        render_frame->data[0], render_frame->linesize[0],
+                        render_frame->data[1], render_frame->linesize[1]);
+  } else {
+    SDL_UpdateYUVTexture(ctx->texture, NULL,
+                         render_frame->data[0], render_frame->linesize[0],
+                         render_frame->data[1], render_frame->linesize[1],
+                         render_frame->data[2], render_frame->linesize[2]);
+  }
 
   int win_w, win_h;
   SDL_GetWindowSize(ctx->window, &win_w, &win_h);
@@ -592,7 +641,7 @@ static void player_process_video_packet(PlayerContext *ctx) {
 
   while (avcodec_receive_frame(ctx->v_codec_ctx, ctx->frame_video) == 0) {
     AVFrame *sw_frame = NULL;
-    AVFrame *src_frame = ctx->frame_video;
+    AVFrame *render_frame = ctx->frame_video;
 
     if (ctx->v_codec_ctx->pix_fmt == AV_PIX_FMT_VAAPI) {
       sw_frame = av_frame_alloc();
@@ -605,39 +654,7 @@ static void player_process_video_packet(PlayerContext *ctx) {
         av_frame_unref(ctx->frame_video);
         continue;
       }
-      src_frame = sw_frame;
-    }
-
-    AVFrame *render_frame = src_frame;
-
-    if (src_frame->format != AV_PIX_FMT_YUV420P && src_frame->data[0] != NULL) {
-      if (!ctx->frame_yuv || ctx->frame_yuv->width != src_frame->width || ctx->frame_yuv->height != src_frame->height) {
-        if (ctx->frame_yuv) av_frame_free(&ctx->frame_yuv);
-        ctx->frame_yuv = av_frame_alloc();
-        ctx->frame_yuv->format = AV_PIX_FMT_YUV420P;
-        ctx->frame_yuv->width = src_frame->width;
-        ctx->frame_yuv->height = src_frame->height;
-        if (av_frame_get_buffer(ctx->frame_yuv, 0) < 0) {
-          fprintf(stderr, "[VidP] Failed to allocate conversion frame_yuv buffer!\n");
-        }
-      }
-
-      ctx->sws_ctx = sws_getCachedContext(
-        ctx->sws_ctx,
-        src_frame->width, src_frame->height, src_frame->format,
-        src_frame->width, src_frame->height, AV_PIX_FMT_YUV420P,
-        SWS_BILINEAR, NULL, NULL, NULL
-      );
-
-      if (ctx->sws_ctx && ctx->frame_yuv && ctx->frame_yuv->data[0]) {
-        sws_scale(
-          ctx->sws_ctx,
-          (const uint8_t * const *)src_frame->data, src_frame->linesize,
-          0, src_frame->height,
-          ctx->frame_yuv->data, ctx->frame_yuv->linesize
-        );
-        render_frame = ctx->frame_yuv;
-      }
+      render_frame = sw_frame;
     }
 
     AVStream *st = ctx->fmt_ctx->streams[ctx->video_stream];
@@ -889,13 +906,14 @@ int main(int argc, char *argv[]) {
 
   printf("[VidP] Playlist loaded with %d file(s).\n", playlist_count);
 
+  SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "2");
+  SDL_SetHint("SDL_RENDER_YUV_COLOR_SPACE", "bt709");
+
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER)) {
     fprintf(stderr, "[VidP] Failed to initialize SDL: %s\n", SDL_GetError());
     free_playlist(playlist, playlist_count);
     return -1;
   }
-
-  SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
 
   int playlist_index = 0;
   int global_quit = 0;
