@@ -90,6 +90,10 @@ typedef struct {
   int frame_counter;
   int subtitle_visible;
   uint32_t current_tex_format;
+
+  uint32_t last_mouse_move;
+  int cursor_hidden;
+  SDL_Cursor *blank_cursor;
 } PlayerContext;
 
 static inline void trim_memory(void) {
@@ -102,6 +106,15 @@ static double get_monotonic_time(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+}
+
+static SDL_Cursor* create_blank_cursor(void) {
+  SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormat(0, 1, 1, 32, SDL_PIXELFORMAT_RGBA32);
+  if (!surf) return NULL;
+  SDL_FillRect(surf, NULL, SDL_MapRGBA(surf->format, 0, 0, 0, 0));
+  SDL_Cursor *cursor = SDL_CreateColorCursor(surf, 0, 0);
+  SDL_FreeSurface(surf);
+  return cursor;
 }
 
 static int is_media_file(const char *filename) {
@@ -474,6 +487,12 @@ static int player_open_file(PlayerContext *ctx, const char *filepath, int index,
   ctx->subtitle_visible = 1;
   ctx->subtitle_stream_count = 0;
   ctx->current_subtitle_idx = -1;
+  
+  ctx->blank_cursor = create_blank_cursor();
+  ctx->last_mouse_move = SDL_GetTicks();
+  ctx->cursor_hidden = 0;
+  SDL_SetCursor(SDL_GetDefaultCursor());
+
   ctx->fmt_ctx = avformat_alloc_context();
   if (!ctx->fmt_ctx) return 0; 
   ctx->fmt_ctx->probesize = 1024 * 1024;
@@ -532,6 +551,11 @@ static int player_open_file(PlayerContext *ctx, const char *filepath, int index,
 }
 
 static void player_close_file(PlayerContext *ctx) {
+  if (ctx->blank_cursor) {
+    SDL_FreeCursor(ctx->blank_cursor);
+    ctx->blank_cursor = NULL;
+  }
+
   if (ctx->sws_ctx) {
     sws_freeContext(ctx->sws_ctx);
     ctx->sws_ctx = NULL;
@@ -809,11 +833,43 @@ static void player_handle_events(PlayerContext *ctx, int *global_quit, int *play
       *global_quit = 1;
     }
 
+    if (event.type == SDL_MOUSEMOTION || event.type == SDL_MOUSEBUTTONDOWN) {
+      ctx->last_mouse_move = SDL_GetTicks();
+      if (ctx->cursor_hidden) {
+        SDL_SetCursor(SDL_GetDefaultCursor());
+        ctx->cursor_hidden = 0;
+      }
+    }
+
+    if (event.type == SDL_WINDOWEVENT) {
+      if (event.window.event == SDL_WINDOWEVENT_ENTER ||
+          event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED ||
+          event.window.event == SDL_WINDOWEVENT_RESIZED) {
+        ctx->last_mouse_move = SDL_GetTicks();
+        if (ctx->cursor_hidden) {
+          SDL_SetCursor(SDL_GetDefaultCursor());
+          ctx->cursor_hidden = 0;
+        }
+      }
+    }
+
     if (event.type == SDL_KEYDOWN && event.key.repeat == 0) {
       switch (event.key.keysym.sym) {
         case SDLK_ESCAPE:
           *global_quit = 1;
           break;
+        case SDLK_f: {
+          Uint32 flags = SDL_GetWindowFlags(ctx->window);
+          if (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) {
+            SDL_SetWindowFullscreen(ctx->window, 0);
+          } else {
+            SDL_SetWindowFullscreen(ctx->window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+          }
+          ctx->last_mouse_move = SDL_GetTicks();
+          SDL_SetCursor(SDL_GetDefaultCursor());
+          ctx->cursor_hidden = 0;
+          break;
+        }
         case SDLK_SPACE:
           ctx->paused = !ctx->paused;
           if (ctx->paused) ctx->paused_started_wall = get_monotonic_time();
@@ -858,6 +914,13 @@ static void player_handle_events(PlayerContext *ctx, int *global_quit, int *play
 static void player_run_loop(PlayerContext *ctx, int *global_quit, int *playlist_index) {
   while (!ctx->file_finished && !*global_quit) {
     player_handle_events(ctx, global_quit, playlist_index);
+
+    if (!ctx->cursor_hidden && (SDL_GetTicks() - ctx->last_mouse_move > 2000)) {
+      if (ctx->blank_cursor) {
+        SDL_SetCursor(ctx->blank_cursor);
+      }
+      ctx->cursor_hidden = 1;
+    }
 
     if (*global_quit || ctx->file_finished) break;
     if (ctx->paused) {
