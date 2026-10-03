@@ -87,6 +87,7 @@ typedef struct {
   double paused_started_wall;
   AVBufferRef *hw_device_ctx;
   int is_hw_accel;
+  enum AVPixelFormat hw_pix_fmt;
   int frame_counter;
   int subtitle_visible;
   uint32_t current_tex_format;
@@ -334,6 +335,7 @@ static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *des
     ctx->sub_tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, bbox_w, bbox_h);
     if (ctx->sub_tex) {
       SDL_SetTextureBlendMode(ctx->sub_tex, SDL_BLENDMODE_BLEND);
+      SDL_SetTextureScaleMode(ctx->sub_tex, SDL_ScaleModeLinear);
     }
   }
 
@@ -409,10 +411,10 @@ static int player_init_audio(PlayerContext *ctx) {
 }
 
 static enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts) {
-  (void)ctx;
+  PlayerContext *p_ctx = (PlayerContext *)ctx->opaque;
   const enum AVPixelFormat *p;
   for (p = pix_fmts; *p != -1; p++) {
-    if (*p == AV_PIX_FMT_VAAPI) {
+    if (*p == p_ctx->hw_pix_fmt) {
       return *p;
     }
   }
@@ -527,10 +529,35 @@ static int player_open_file(PlayerContext *ctx, const char *filepath, int index,
   ctx->v_codec_ctx->thread_count = 2;
   ctx->v_codec_ctx->thread_type = FF_THREAD_FRAME;
 
-  if (av_hwdevice_ctx_create(&ctx->hw_device_ctx, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0) >= 0) {
-    ctx->v_codec_ctx->hw_device_ctx = av_buffer_ref(ctx->hw_device_ctx);
-    ctx->v_codec_ctx->get_format = get_hw_format;
-    ctx->is_hw_accel = 1;
+  ctx->v_codec_ctx->opaque = ctx;
+  ctx->hw_pix_fmt = AV_PIX_FMT_NONE;
+
+  static const enum AVHWDeviceType linux_hw_priority[] = {
+      AV_HWDEVICE_TYPE_VAAPI,
+      AV_HWDEVICE_TYPE_CUDA,
+      AV_HWDEVICE_TYPE_VDPAU,
+      AV_HWDEVICE_TYPE_NONE
+  };
+
+  for (int i = 0; linux_hw_priority[i] != AV_HWDEVICE_TYPE_NONE; i++) {
+    for (int j = 0;; j++) {
+      const AVCodecHWConfig *config = avcodec_get_hw_config(v_codec, j);
+      if (!config) break;
+
+      if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) &&
+          config->device_type == linux_hw_priority[i]) {
+
+        if (av_hwdevice_ctx_create(&ctx->hw_device_ctx, linux_hw_priority[i], NULL, NULL, 0) >= 0) {
+          ctx->hw_pix_fmt = config->pix_fmt;
+          ctx->v_codec_ctx->hw_device_ctx = av_buffer_ref(ctx->hw_device_ctx);
+          ctx->v_codec_ctx->get_format = get_hw_format;
+          ctx->is_hw_accel = 1;
+          printf("[VidP] HW Acceleration active: %s\n", av_hwdevice_get_type_name(linux_hw_priority[i]));
+          break;
+        }
+      }
+    }
+    if (ctx->is_hw_accel) break;
   }
 
   if (avcodec_open2(ctx->v_codec_ctx, v_codec, NULL) < 0) return 0;
@@ -664,10 +691,23 @@ static void player_process_video_packet(PlayerContext *ctx) {
   if (avcodec_send_packet(ctx->v_codec_ctx, ctx->packet) < 0) return;
 
   while (avcodec_receive_frame(ctx->v_codec_ctx, ctx->frame_video) == 0) {
+    AVStream *st = ctx->fmt_ctx->streams[ctx->video_stream];
+    int64_t pts = ctx->frame_video->best_effort_timestamp;
+    double video_time = (pts != AV_NOPTS_VALUE) ? pts * av_q2d(st->time_base) : -1.0;
+
+    if (video_time >= 0.0 && ctx->discard_until >= 0.0) {
+      if (video_time < ctx->discard_until - 0.2) {
+        av_frame_unref(ctx->frame_video);
+        continue;
+      } else {
+        ctx->discard_until = -1.0;
+      }
+    }
+
     AVFrame *sw_frame = NULL;
     AVFrame *render_frame = ctx->frame_video;
 
-    if (ctx->v_codec_ctx->pix_fmt == AV_PIX_FMT_VAAPI) {
+    if (ctx->is_hw_accel && ctx->frame_video->format == ctx->hw_pix_fmt) {
       sw_frame = av_frame_alloc();
       if (!sw_frame) {
         av_frame_unref(ctx->frame_video);
@@ -681,21 +721,7 @@ static void player_process_video_packet(PlayerContext *ctx) {
       render_frame = sw_frame;
     }
 
-    AVStream *st = ctx->fmt_ctx->streams[ctx->video_stream];
-    int64_t pts = ctx->frame_video->best_effort_timestamp;
-
-    if (pts != AV_NOPTS_VALUE) {
-      double video_time = pts * av_q2d(st->time_base);
-
-      if (ctx->discard_until >= 0.0) {
-        if (video_time < ctx->discard_until - 0.2) {
-          av_frame_unref(ctx->frame_video);
-          if (sw_frame) av_frame_free(&sw_frame);
-          continue;
-        } else {
-          ctx->discard_until = -1.0;
-        }
-      }
+    if (video_time >= 0.0) {
       ctx->last_video_time = video_time;
 
       if (!ctx->video_clock_started) {

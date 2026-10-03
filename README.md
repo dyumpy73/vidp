@@ -13,7 +13,7 @@ A lightweight, single-threaded media player built in C using **FFmpeg**, **SDL2*
 ## Features
 
 - **Single-Threaded Architecture**: Eliminates race conditions and concurrency overhead while maintaining smooth playback.
-- **Hardware Acceleration**: Built-in VAAPI hardware decoding support with graceful fallback to software decoding.
+- **Multi-Backend Hardware Acceleration**: Hardware decoding support with fallback priority (VAAPI, CUDA, VDPAU) to software decoding
 - **Advanced Subtitle Rendering**: Native ASS/SSA subtitle support with soft-shadows and styling powered by `libass`.
 - **A/V Synchronization**: Audio/Video clock synchronization algorithm with frame-dropping and latency compensation.
 - **Playlist & Directory Scanning**: Automatically builds and sorts playlists from directory inputs or multiple file arguments.
@@ -43,10 +43,13 @@ You can build the project using `make`:
 
 ```bash
 # Build the executable
-make install
+sudo make install
 
 # Clean build artifacts
 make clean
+
+# Uninstall the executable
+sudo make uninstall
 ```
 
 Alternatively, to compile manually without Make:
@@ -84,6 +87,7 @@ vidp episode1.mkv episode2.mkv episode3.mkv
 | **Right Arrow** | Seek forward 10 seconds |
 | **Up Arrow** | Increase volume (+10%) |
 | **Down Arrow** | Decrease volume (-10%) |
+| **F** | Toggle fullscreen mode |
 | **N** | Next track in playlist |
 | **P** | Previous track in playlist |
 | **V** | Toggle subtitle |
@@ -95,7 +99,8 @@ vidp episode1.mkv episode2.mkv episode3.mkv
 ## Technical Highlights
 
 - **Single-Threaded Event Loop**: The decoder, audio-push mechanism, subtitle pipeline, and window event handling all reside in a unified loop to keep state transitions perfectly predictable.
-- **Hardware-Accelerated Decoding**: Leverages VAAPI contexts (`AV_HWDEVICE_TYPE_VAAPI`) for low-CPU decoding on supported GPUs.
+- **Zero-Copy VRAM Discarding**: Fast seeking optimization on long-GOP streams (e.g., HEVC/x265). Discards pre-target frames directly in GPU memory before invoking PCIe transfers via `av_hwframe_transfer_data`, eliminating seek latency.
+- **Dynamic NV12/IYUV Texture Allocation**: Dynamically switches SDL texture pixel formats on-the-fly to match hardware acceleration outputs (NV12) or software decoding fallbacks (IYUV).
 - **Memory Recycling**: Explicit resource teardown routines (`player_close_file`) free audio buffers, hardware textures, decoders, and force glibc arena compaction via `malloc_trim(0)` between track switches.
 
 ---
