@@ -20,7 +20,7 @@
 #include <SDL2/SDL.h>
 #include <ass/ass.h>
 
-#define AUDIO_BUFFER_SIZE       (64 * 1024)
+#define AUDIO_BUFFER_SIZE       (256 * 1024)
 #define SEEK_STEP_SEC           10.0
 #define AV_SYNC_THRESHOLD_MAX   0.100
 #define AV_SYNC_THRESHOLD_MIN  -0.100
@@ -190,45 +190,57 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
 
   if (audio_buf->size > 0) {
     size_t bytes_to_copy = (size_t)len < audio_buf->size ? (size_t)len : audio_buf->size;
+
     if (audio_buf->read_pos + bytes_to_copy <= AUDIO_BUFFER_SIZE) {
-      SDL_MixAudioFormat(stream, audio_buf->buffer + audio_buf->read_pos, AUDIO_S16SYS, bytes_to_copy, (int)(SDL_MIX_MAXVOLUME * audio_buf->volume));
+      memcpy(stream, audio_buf->buffer + audio_buf->read_pos, bytes_to_copy);
       audio_buf->read_pos = (audio_buf->read_pos + bytes_to_copy) % AUDIO_BUFFER_SIZE;
     } else {
       size_t first_part = AUDIO_BUFFER_SIZE - audio_buf->read_pos;
       size_t second_part = bytes_to_copy - first_part;
-      SDL_MixAudioFormat(stream, audio_buf->buffer + audio_buf->read_pos, AUDIO_S16SYS, first_part, (int)(SDL_MIX_MAXVOLUME * audio_buf->volume));
-      SDL_MixAudioFormat(stream + first_part, audio_buf->buffer, AUDIO_S16SYS, second_part, (int)(SDL_MIX_MAXVOLUME * audio_buf->volume));
+      memcpy(stream, audio_buf->buffer + audio_buf->read_pos, first_part);
+      memcpy(stream + first_part, audio_buf->buffer, second_part);
       audio_buf->read_pos = second_part;
     }
     audio_buf->size -= bytes_to_copy;
+
+    float vol = audio_buf->volume;
+    if (vol < 0.999f) {
+      Sint16 *s = (Sint16 *)stream;
+      int n = (int)(bytes_to_copy / sizeof(Sint16));
+      for (int i = 0; i < n; i++) {
+        s[i] = (Sint16)(s[i] * vol);
+      }
+    }
   }
 
   SDL_UnlockMutex(audio_buf->lock);
 }
 
 static void push_audio_data(AudioBuffer *audio_buf, const uint8_t *data, size_t len) {
+  if (len >= AUDIO_BUFFER_SIZE) {
+    data += (len - AUDIO_BUFFER_SIZE + 1);
+    len = AUDIO_BUFFER_SIZE - 1;
+  }
+
   SDL_LockMutex(audio_buf->lock);
 
-  int retries = 20;
-  while (audio_buf->size + len > AUDIO_BUFFER_SIZE && retries-- > 0) {
-    SDL_UnlockMutex(audio_buf->lock);
-    SDL_Delay(1);
-    SDL_LockMutex(audio_buf->lock);
+  if (audio_buf->size + len > AUDIO_BUFFER_SIZE) {
+    size_t to_drop = audio_buf->size + len - AUDIO_BUFFER_SIZE;
+    audio_buf->read_pos = (audio_buf->read_pos + to_drop) % AUDIO_BUFFER_SIZE;
+    audio_buf->size -= to_drop;
   }
 
-  if (audio_buf->size + len <= AUDIO_BUFFER_SIZE) {
-    if (audio_buf->write_pos + len <= AUDIO_BUFFER_SIZE) {
-      memcpy(audio_buf->buffer + audio_buf->write_pos, data, len);
-      audio_buf->write_pos = (audio_buf->write_pos + len) % AUDIO_BUFFER_SIZE;
-    } else {
-      size_t first_part = AUDIO_BUFFER_SIZE - audio_buf->write_pos;
-      size_t second_part = len - first_part;
-      memcpy(audio_buf->buffer + audio_buf->write_pos, data, first_part);
-      memcpy(audio_buf->buffer, data + first_part, second_part);
-      audio_buf->write_pos = second_part;
-    }
-    audio_buf->size += len;
+  if (audio_buf->write_pos + len <= AUDIO_BUFFER_SIZE) {
+    memcpy(audio_buf->buffer + audio_buf->write_pos, data, len);
+    audio_buf->write_pos = (audio_buf->write_pos + len) % AUDIO_BUFFER_SIZE;
+  } else {
+    size_t first_part = AUDIO_BUFFER_SIZE - audio_buf->write_pos;
+    size_t second_part = len - first_part;
+    memcpy(audio_buf->buffer + audio_buf->write_pos, data, first_part);
+    memcpy(audio_buf->buffer, data + first_part, second_part);
+    audio_buf->write_pos = second_part;
   }
+  audio_buf->size += len;
 
   SDL_UnlockMutex(audio_buf->lock);
 }
@@ -261,34 +273,12 @@ static inline void blend_ass_pixel(uint32_t *pixel, SDL_PixelFormat *fmt, uint8_
 static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect) {
   if (!img || dest_rect->w <= 0 || dest_rect->h <= 0) return;
 
-  int min_x = dest_rect->w, min_y = dest_rect->h;
-  int max_x = 0, max_y = 0;
+  int target_w = dest_rect->w;
+  int target_h = dest_rect->h;
 
-  ASS_Image *curr = img;
-  while (curr) {
-    if (curr->type != 3 && curr->w > 0 && curr->h > 0) {
-      if (curr->dst_x < min_x) min_x = curr->dst_x;
-      if (curr->dst_y < min_y) min_y = curr->dst_y;
-      if (curr->dst_x + curr->w > max_x) max_x = curr->dst_x + curr->w;
-      if (curr->dst_y + curr->h > max_y) max_y = curr->dst_y + curr->h;
-    }
-    curr = curr->next;
-  }
-
-  if (max_x <= min_x || max_y <= min_y) return;
-
-  if (min_x < 0) min_x = 0;
-  if (min_y < 0) min_y = 0;
-  if (max_x > dest_rect->w) max_x = dest_rect->w;
-  if (max_y > dest_rect->h) max_y = dest_rect->h;
-
-  int bbox_w = max_x - min_x;
-  int bbox_h = max_y - min_y;
-  if (bbox_w <= 0 || bbox_h <= 0) return;
-
-  if (!ctx->sub_surf || ctx->sub_surf->w != bbox_w || ctx->sub_surf->h != bbox_h) {
+  if (!ctx->sub_surf || ctx->sub_surf->w != target_w || ctx->sub_surf->h != target_h) {
     if (ctx->sub_surf) SDL_FreeSurface(ctx->sub_surf);
-    ctx->sub_surf = SDL_CreateRGBSurfaceWithFormat(0, bbox_w, bbox_h, 32, SDL_PIXELFORMAT_RGBA32);
+    ctx->sub_surf = SDL_CreateRGBSurfaceWithFormat(0, target_w, target_h, 32, SDL_PIXELFORMAT_RGBA32);
     if (!ctx->sub_surf) return;
 
     if (ctx->sub_tex) {
@@ -297,10 +287,21 @@ static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *des
     }
   }
 
+  if (!ctx->sub_tex) {
+    ctx->sub_tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, target_w, target_h);
+    if (ctx->sub_tex) {
+      SDL_SetTextureBlendMode(ctx->sub_tex, SDL_BLENDMODE_BLEND);
+      SDL_SetTextureScaleMode(ctx->sub_tex, SDL_ScaleModeLinear);
+    } else {
+      fprintf(stderr, "[VidP] Failed to create subtitle texture: %s\n", SDL_GetError());
+      return;
+    }
+  }
+
   SDL_FillRect(ctx->sub_surf, NULL, 0);
   uint32_t *pixels = (uint32_t *)ctx->sub_surf->pixels;
 
-  curr = img;
+  ASS_Image *curr = img;
   while (curr) {
     if (curr->type != 3 && curr->w > 0 && curr->h > 0) {
       uint8_t r = (curr->color >> 24) & 0xFF;
@@ -310,18 +311,18 @@ static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *des
 
       if (a > 0) {
         for (int y = 0; y < curr->h; y++) {
-          int dst_y = (curr->dst_y + y) - min_y;
-          if (dst_y < 0 || dst_y >= bbox_h) continue;
+          int dst_y = curr->dst_y + y;
+          if (dst_y < 0 || dst_y >= target_h) continue;
 
           for (int x = 0; x < curr->w; x++) {
-            int dst_x = (curr->dst_x + x) - min_x;
-            if (dst_x < 0 || dst_x >= bbox_w) continue;
+            int dst_x = curr->dst_x + x;
+            if (dst_x < 0 || dst_x >= target_w) continue;
 
             uint8_t alpha = curr->bitmap[y * curr->stride + x];
             if (alpha == 0) continue;
 
             uint8_t final_a = (uint8_t)((alpha * a) / 255);
-            int idx = dst_y * bbox_w + dst_x;
+            int idx = dst_y * target_w + dst_x;
 
             blend_ass_pixel(&pixels[idx], ctx->sub_surf->format, r, g, b, final_a);
           }
@@ -331,19 +332,8 @@ static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *des
     curr = curr->next;
   }
 
-  if (!ctx->sub_tex) {
-    ctx->sub_tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, bbox_w, bbox_h);
-    if (ctx->sub_tex) {
-      SDL_SetTextureBlendMode(ctx->sub_tex, SDL_BLENDMODE_BLEND);
-      SDL_SetTextureScaleMode(ctx->sub_tex, SDL_ScaleModeLinear);
-    }
-  }
-
-  if (ctx->sub_tex) {
-    SDL_UpdateTexture(ctx->sub_tex, NULL, ctx->sub_surf->pixels, ctx->sub_surf->pitch);
-    SDL_Rect target_rect = { dest_rect->x + min_x, dest_rect->y + min_y, bbox_w, bbox_h };
-    SDL_RenderCopy(ctx->renderer, ctx->sub_tex, NULL, &target_rect);
-  }
+  SDL_UpdateTexture(ctx->sub_tex, NULL, ctx->sub_surf->pixels, ctx->sub_surf->pitch);
+  SDL_RenderCopy(ctx->renderer, ctx->sub_tex, NULL, dest_rect);
 }
 
 static void player_do_seek(PlayerContext *ctx, double target_sec) {
@@ -452,7 +442,7 @@ static void player_init_subtitles(PlayerContext *ctx) {
   ass_set_hinting(ctx->ass_renderer, ASS_HINTING_NONE);
   ass_set_shaper(ctx->ass_renderer, ASS_SHAPING_COMPLEX);
   ass_set_fonts(ctx->ass_renderer, NULL, "Sans", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
-  ass_set_cache_limits(ctx->ass_renderer, 1, 1);
+  ass_set_cache_limits(ctx->ass_renderer, 20, 20);
   ctx->ass_track = ass_new_track(ctx->ass_library);
 
   if (sub_par->extradata && sub_par->extradata_size > 0) {
@@ -618,13 +608,50 @@ static void player_close_file(PlayerContext *ctx) {
   }
 
   if (ctx->fmt_ctx) avformat_close_input(&ctx->fmt_ctx);
-
   if (ctx->texture) SDL_DestroyTexture(ctx->texture);
+
+  ctx->texture = NULL;
+  ctx->current_tex_format = 0;
   if (ctx->renderer) SDL_DestroyRenderer(ctx->renderer);
   if (ctx->window) SDL_DestroyWindow(ctx->window);
   if (ctx->audio_buf.lock) SDL_DestroyMutex(ctx->audio_buf.lock);
 
   trim_memory();
+}
+
+static void player_check_dynamic_resolution(PlayerContext *ctx, AVFrame *render_frame) {
+  if (!render_frame || render_frame->width <= 0 || render_frame->height <= 0) return;
+  if (render_frame->width == ctx->width && render_frame->height == ctx->height) return;
+
+  printf("[VidP] Dynamic resolution change: %dx%d -> %dx%d\n",
+         ctx->width, ctx->height, render_frame->width, render_frame->height);
+
+  ctx->width  = render_frame->width;
+  ctx->height = render_frame->height;
+
+  if (ctx->frame_yuv) {
+    av_frame_free(&ctx->frame_yuv);
+    ctx->frame_yuv = NULL;
+  }
+
+  if (ctx->texture) {
+    SDL_DestroyTexture(ctx->texture);
+    ctx->texture = NULL;
+  }
+  ctx->current_tex_format = 0;
+
+  if (ctx->sub_surf) {
+    SDL_FreeSurface(ctx->sub_surf);
+    ctx->sub_surf = NULL;
+  }
+  if (ctx->sub_tex) {
+    SDL_DestroyTexture(ctx->sub_tex);
+    ctx->sub_tex = NULL;
+  }
+
+  if (ctx->ass_renderer) {
+    ass_set_storage_size(ctx->ass_renderer, ctx->width, ctx->height);
+  }
 }
 
 static void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
@@ -736,7 +763,7 @@ static void player_process_video_packet(PlayerContext *ctx) {
       sw_frame = av_frame_alloc();
       if (!sw_frame) {
         av_frame_unref(ctx->frame_video);
-        return;
+        continue;
       }
       if (av_hwframe_transfer_data(sw_frame, ctx->frame_video, 0) < 0) {
         av_frame_free(&sw_frame);
@@ -745,6 +772,8 @@ static void player_process_video_packet(PlayerContext *ctx) {
       }
       render_frame = sw_frame;
     }
+
+    player_check_dynamic_resolution(ctx, render_frame);
 
     if (video_time >= 0.0) {
       ctx->last_video_time = video_time;
@@ -778,7 +807,9 @@ static void player_process_video_packet(PlayerContext *ctx) {
     player_render_current_frame(ctx, render_frame);
 
     av_frame_unref(ctx->frame_video);
-    if (sw_frame) av_frame_free(&sw_frame);
+    if (sw_frame) {
+      av_frame_free(&sw_frame);
+    }
 
     if (++ctx->frame_counter % 300 == 0) {
       trim_memory();
