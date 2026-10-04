@@ -780,13 +780,20 @@ static void player_render_current_frame(PlayerContext *ctx, AVFrame *render_fram
         ctx->sws_ctx,
         render_frame->width, render_frame->height, (enum AVPixelFormat)render_frame->format,
         ctx->width, ctx->height, AV_PIX_FMT_YUV420P,
-        SWS_BICUBIC, NULL, NULL, NULL
+        SWS_FAST_BILINEAR, NULL, NULL, NULL
     );
 
     if (ctx->sws_ctx) {
-      sws_scale(ctx->sws_ctx, (const uint8_t *const *)render_frame->data, render_frame->linesize,
-                0, render_frame->height, ctx->frame_yuv->data, ctx->frame_yuv->linesize);
-      final_frame = ctx->frame_yuv;
+      int scaled = sws_scale(ctx->sws_ctx, (const uint8_t *const *)render_frame->data,
+                             render_frame->linesize, 0, render_frame->height,
+                             ctx->frame_yuv->data, ctx->frame_yuv->linesize);
+      if (scaled > 0) {
+        final_frame = ctx->frame_yuv;
+      } else {
+        SDL_RenderClear(ctx->renderer);
+        SDL_RenderPresent(ctx->renderer);
+        return;
+      }
     }
   }
 
@@ -802,6 +809,12 @@ static void player_render_current_frame(PlayerContext *ctx, AVFrame *render_fram
     if (ctx->texture) {
       SDL_SetTextureScaleMode(ctx->texture, SDL_ScaleModeLinear);
     }
+  }
+
+  if (!ctx->texture) {
+    SDL_RenderClear(ctx->renderer);
+    SDL_RenderPresent(ctx->renderer);
+    return;
   }
 
   if (req_format == SDL_PIXELFORMAT_NV12) {
