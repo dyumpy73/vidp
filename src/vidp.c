@@ -20,7 +20,7 @@
 #include <SDL2/SDL.h>
 #include <ass/ass.h>
 
-#define AUDIO_BUFFER_SIZE       (512 * 1024)
+#define AUDIO_BUFFER_SIZE       (64 * 1024)
 #define SEEK_STEP_SEC           10.0
 #define AV_SYNC_THRESHOLD_MAX   0.100
 #define AV_SYNC_THRESHOLD_MIN  -0.100
@@ -628,8 +628,33 @@ static void player_close_file(PlayerContext *ctx) {
 }
 
 static void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
+  AVFrame *final_frame = render_frame;
+
+  if (render_frame->format != AV_PIX_FMT_YUV420P && render_frame->format != AV_PIX_FMT_NV12) {
+    if (!ctx->frame_yuv) {
+      ctx->frame_yuv = av_frame_alloc();
+      ctx->frame_yuv->format = AV_PIX_FMT_YUV420P;
+      ctx->frame_yuv->width = ctx->width;
+      ctx->frame_yuv->height = ctx->height;
+      av_frame_get_buffer(ctx->frame_yuv, 32);
+    }
+
+    ctx->sws_ctx = sws_getCachedContext(
+        ctx->sws_ctx,
+        render_frame->width, render_frame->height, (enum AVPixelFormat)render_frame->format,
+        ctx->width, ctx->height, AV_PIX_FMT_YUV420P,
+        SWS_BICUBIC, NULL, NULL, NULL
+    );
+
+    if (ctx->sws_ctx) {
+      sws_scale(ctx->sws_ctx, (const uint8_t *const *)render_frame->data, render_frame->linesize,
+                0, render_frame->height, ctx->frame_yuv->data, ctx->frame_yuv->linesize);
+      final_frame = ctx->frame_yuv;
+    }
+  }
+
   uint32_t req_format = SDL_PIXELFORMAT_IYUV;
-  if (render_frame->format == AV_PIX_FMT_NV12) {
+  if (final_frame->format == AV_PIX_FMT_NV12) {
     req_format = SDL_PIXELFORMAT_NV12;
   }
 
@@ -644,13 +669,13 @@ static void player_render_current_frame(PlayerContext *ctx, AVFrame *render_fram
 
   if (req_format == SDL_PIXELFORMAT_NV12) {
     SDL_UpdateNVTexture(ctx->texture, NULL,
-                        render_frame->data[0], render_frame->linesize[0],
-                        render_frame->data[1], render_frame->linesize[1]);
+                        final_frame->data[0], final_frame->linesize[0],
+                        final_frame->data[1], final_frame->linesize[1]);
   } else {
     SDL_UpdateYUVTexture(ctx->texture, NULL,
-                         render_frame->data[0], render_frame->linesize[0],
-                         render_frame->data[1], render_frame->linesize[1],
-                         render_frame->data[2], render_frame->linesize[2]);
+                         final_frame->data[0], final_frame->linesize[0],
+                         final_frame->data[1], final_frame->linesize[1],
+                         final_frame->data[2], final_frame->linesize[2]);
   }
 
   int win_w, win_h;
