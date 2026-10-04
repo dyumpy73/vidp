@@ -26,6 +26,7 @@
 #define AV_SYNC_THRESHOLD_MIN  -0.100
 #define AV_SYNC_DROP_THRESHOLD -0.020
 #define AV_SYNC_DELAY_THRESHOLD  0.002
+#define SUBTITLE_RENDER_SCALE  1
 
 typedef struct {
   uint8_t buffer[AUDIO_BUFFER_SIZE];
@@ -90,6 +91,8 @@ typedef struct {
   enum AVPixelFormat hw_pix_fmt;
   int frame_counter;
   int subtitle_visible;
+  int prev_sub_min_x, prev_sub_min_y, prev_sub_max_x, prev_sub_max_y;
+  int prev_sub_valid;
   uint32_t current_tex_format;
 
   uint32_t last_mouse_move;
@@ -253,28 +256,40 @@ static void player_reset_audio_buffer(AudioBuffer *audio_buf) {
   SDL_UnlockMutex(audio_buf->lock);
 }
 
-static inline void blend_ass_pixel(uint32_t *pixel, SDL_PixelFormat *fmt, uint8_t r, uint8_t g, uint8_t b, uint8_t final_a) {
-  uint8_t ex_r, ex_g, ex_b, ex_a;
-  SDL_GetRGBA(*pixel, fmt, &ex_r, &ex_g, &ex_b, &ex_a);
+// [PATCH] Fast RGBA32 blending: direct pack, tanpa SDL_GetRGBA/MapRGBA.
+// Surface selalu SDL_PIXELFORMAT_RGBA32 (ABGR8888 little-endian).
+static inline void blend_ass_pixel(uint32_t *pixel, uint8_t r, uint8_t g, uint8_t b, uint8_t final_a) {
+  uint32_t px = *pixel;
+  uint8_t ex_a = (px >> 24) & 0xFF;
 
-  if (ex_a == 0) {
-    *pixel = SDL_MapRGBA(fmt, r, g, b, final_a);
-  } else {
-    uint8_t out_a = final_a + ex_a * (255 - final_a) / 255;
-    if (out_a > 0) {
-      uint8_t out_r = (r * final_a + ex_r * ex_a * (255 - final_a) / 255) / out_a;
-      uint8_t out_g = (g * final_a + ex_g * ex_a * (255 - final_a) / 255) / out_a;
-      uint8_t out_b = (b * final_a + ex_b * ex_a * (255 - final_a) / 255) / out_a;
-      *pixel = SDL_MapRGBA(fmt, out_r, out_g, out_b, out_a);
-    }
+  // Fast path: opaque pixel atau target kosong
+  if (final_a == 255 || ex_a == 0) {
+    if (final_a == 0) return;
+    *pixel = ((uint32_t)final_a << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | r;
+    return;
+  }
+
+  uint8_t ex_r = px & 0xFF;
+  uint8_t ex_g = (px >> 8) & 0xFF;
+  uint8_t ex_b = (px >> 16) & 0xFF;
+
+  uint8_t out_a = final_a + ex_a * (255 - final_a) / 255;
+  if (out_a > 0) {
+    uint8_t out_r = (r * final_a + ex_r * ex_a * (255 - final_a) / 255) / out_a;
+    uint8_t out_g = (g * final_a + ex_g * ex_a * (255 - final_a) / 255) / out_a;
+    uint8_t out_b = (b * final_a + ex_b * ex_a * (255 - final_a) / 255) / out_a;
+    *pixel = ((uint32_t)out_a << 24) | ((uint32_t)out_b << 16) | ((uint32_t)out_g << 8) | out_r;
   }
 }
 
 static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect) {
   if (!img || dest_rect->w <= 0 || dest_rect->h <= 0) return;
 
-  int target_w = dest_rect->w;
-  int target_h = dest_rect->h;
+  // [PATCH] Render di resolusi tereduksi
+  int target_w = dest_rect->w / SUBTITLE_RENDER_SCALE;
+  int target_h = dest_rect->h / SUBTITLE_RENDER_SCALE;
+  if (target_w < 1) target_w = 1;
+  if (target_h < 1) target_h = 1;
 
   if (!ctx->sub_surf || ctx->sub_surf->w != target_w || ctx->sub_surf->h != target_h) {
     if (ctx->sub_surf) SDL_FreeSurface(ctx->sub_surf);
@@ -285,23 +300,90 @@ static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *des
       SDL_DestroyTexture(ctx->sub_tex);
       ctx->sub_tex = NULL;
     }
+    ctx->prev_sub_valid = 0;
   }
 
   if (!ctx->sub_tex) {
-    ctx->sub_tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, target_w, target_h);
-    if (ctx->sub_tex) {
-      SDL_SetTextureBlendMode(ctx->sub_tex, SDL_BLENDMODE_BLEND);
-      SDL_SetTextureScaleMode(ctx->sub_tex, SDL_ScaleModeLinear);
-    } else {
+    ctx->sub_tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA32,
+                                     SDL_TEXTUREACCESS_STREAMING, target_w, target_h);
+    if (!ctx->sub_tex) {
       fprintf(stderr, "[VidP] Failed to create subtitle texture: %s\n", SDL_GetError());
       return;
     }
+    SDL_SetTextureBlendMode(ctx->sub_tex, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(ctx->sub_tex, SDL_ScaleModeLinear);
+    ctx->prev_sub_valid = 0;
   }
 
-  SDL_FillRect(ctx->sub_surf, NULL, 0);
-  uint32_t *pixels = (uint32_t *)ctx->sub_surf->pixels;
+  // [PATCH] Hitung bbox dalam koordinat half-res
+  int min_x = target_w, min_y = target_h;
+  int max_x = 0, max_y = 0;
 
   ASS_Image *curr = img;
+  while (curr) {
+    // [PATCH] Culling: skip layer yang gak akan kelihatan
+    if (curr->type != 3 && curr->w > 0 && curr->h > 0) {
+      uint8_t a = 255 - (curr->color & 0xFF);
+      if (a > 0) {
+        int dx = curr->dst_x / SUBTITLE_RENDER_SCALE;
+        int dy = curr->dst_y / SUBTITLE_RENDER_SCALE;
+        int dw = curr->w / SUBTITLE_RENDER_SCALE;
+        int dh = curr->h / SUBTITLE_RENDER_SCALE;
+        if (dw < 1) dw = 1;
+        if (dh < 1) dh = 1;
+
+        if (dx < min_x) min_x = dx;
+        if (dy < min_y) min_y = dy;
+        if (dx + dw > max_x) max_x = dx + dw;
+        if (dy + dh > max_y) max_y = dy + dh;
+      }
+    }
+    curr = curr->next;
+  }
+
+  if (max_x <= min_x || max_y <= min_y) {
+    if (ctx->prev_sub_valid) {
+      SDL_Rect old_rect = {
+        ctx->prev_sub_min_x, ctx->prev_sub_min_y,
+        ctx->prev_sub_max_x - ctx->prev_sub_min_x,
+        ctx->prev_sub_max_y - ctx->prev_sub_min_y
+      };
+      SDL_FillRect(ctx->sub_surf, &old_rect, 0);
+      SDL_UpdateTexture(ctx->sub_tex, &old_rect,
+                        (uint8_t *)ctx->sub_surf->pixels
+                          + old_rect.y * ctx->sub_surf->pitch
+                          + old_rect.x * 4,
+                        ctx->sub_surf->pitch);
+      ctx->prev_sub_valid = 0;
+    }
+    return;
+  }
+
+  if (min_x < 0) min_x = 0;
+  if (min_y < 0) min_y = 0;
+  if (max_x > target_w) max_x = target_w;
+  if (max_y > target_h) max_y = target_h;
+
+  // Union dengan bbox frame sebelumnya (biar gak ghosting)
+  int u_min_x = min_x, u_min_y = min_y, u_max_x = max_x, u_max_y = max_y;
+  if (ctx->prev_sub_valid) {
+    if (ctx->prev_sub_min_x < u_min_x) u_min_x = ctx->prev_sub_min_x;
+    if (ctx->prev_sub_min_y < u_min_y) u_min_y = ctx->prev_sub_min_y;
+    if (ctx->prev_sub_max_x > u_max_x) u_max_x = ctx->prev_sub_max_x;
+    if (ctx->prev_sub_max_y > u_max_y) u_max_y = ctx->prev_sub_max_y;
+  }
+
+  int u_w = u_max_x - u_min_x;
+  int u_h = u_max_y - u_min_y;
+  if (u_w <= 0 || u_h <= 0) return;
+
+  SDL_Rect clear_rect = { u_min_x, u_min_y, u_w, u_h };
+  SDL_FillRect(ctx->sub_surf, &clear_rect, 0);
+
+  uint32_t *pixels = (uint32_t *)ctx->sub_surf->pixels;
+  int surf_w = ctx->sub_surf->w;
+
+  curr = img;
   while (curr) {
     if (curr->type != 3 && curr->w > 0 && curr->h > 0) {
       uint8_t r = (curr->color >> 24) & 0xFF;
@@ -309,31 +391,59 @@ static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *des
       uint8_t b = (curr->color >> 8) & 0xFF;
       uint8_t a = 255 - (curr->color & 0xFF);
 
-      if (a > 0) {
-        for (int y = 0; y < curr->h; y++) {
-          int dst_y = curr->dst_y + y;
-          if (dst_y < 0 || dst_y >= target_h) continue;
+      if (a == 0) { curr = curr->next; continue; }  // culling
 
-          for (int x = 0; x < curr->w; x++) {
-            int dst_x = curr->dst_x + x;
-            if (dst_x < 0 || dst_x >= target_w) continue;
+      // [PATCH] Scale koordinat & ukuran layer ke half-res
+      int layer_dx = curr->dst_x / SUBTITLE_RENDER_SCALE;
+      int layer_dy = curr->dst_y / SUBTITLE_RENDER_SCALE;
+      int layer_w  = curr->w / SUBTITLE_RENDER_SCALE;
+      int layer_h  = curr->h / SUBTITLE_RENDER_SCALE;
+      if (layer_w < 1) layer_w = 1;
+      if (layer_h < 1) layer_h = 1;
 
-            uint8_t alpha = curr->bitmap[y * curr->stride + x];
-            if (alpha == 0) continue;
+      for (int y = 0; y < layer_h; y++) {
+        int dst_y = layer_dy + y;
+        if (dst_y < 0 || dst_y >= target_h) continue;
 
-            uint8_t final_a = (uint8_t)((alpha * a) / 255);
-            int idx = dst_y * target_w + dst_x;
+        // [PATCH] Sampling bitmap libass dengan nearest-neighbor (cepat)
+        int src_y = y * SUBTITLE_RENDER_SCALE;
+        if (src_y >= curr->h) src_y = curr->h - 1;
+        const uint8_t *bmp_row = curr->bitmap + src_y * curr->stride;
 
-            blend_ass_pixel(&pixels[idx], ctx->sub_surf->format, r, g, b, final_a);
-          }
+        uint32_t *row = pixels + dst_y * surf_w;
+
+        for (int x = 0; x < layer_w; x++) {
+          int dst_x = layer_dx + x;
+          if (dst_x < 0 || dst_x >= target_w) continue;
+
+          int src_x = x * SUBTITLE_RENDER_SCALE;
+          if (src_x >= curr->w) src_x = curr->w - 1;
+
+          uint8_t alpha = bmp_row[src_x];
+          if (alpha == 0) continue;
+
+          uint8_t final_a = (uint8_t)((alpha * a) / 255);
+          blend_ass_pixel(&row[dst_x], r, g, b, final_a);
         }
       }
     }
     curr = curr->next;
   }
 
-  SDL_UpdateTexture(ctx->sub_tex, NULL, ctx->sub_surf->pixels, ctx->sub_surf->pitch);
+  SDL_Rect update_rect = { u_min_x, u_min_y, u_w, u_h };
+  SDL_UpdateTexture(ctx->sub_tex, &update_rect,
+                    (uint8_t *)ctx->sub_surf->pixels
+                      + u_min_y * ctx->sub_surf->pitch
+                      + u_min_x * 4,
+                    ctx->sub_surf->pitch);
+
   SDL_RenderCopy(ctx->renderer, ctx->sub_tex, NULL, dest_rect);
+
+  ctx->prev_sub_min_x = min_x;
+  ctx->prev_sub_min_y = min_y;
+  ctx->prev_sub_max_x = max_x;
+  ctx->prev_sub_max_y = max_y;
+  ctx->prev_sub_valid = 1;
 }
 
 static void player_do_seek(PlayerContext *ctx, double target_sec) {
