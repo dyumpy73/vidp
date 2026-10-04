@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -O2 -Wall
+CFLAGS = -O3 -march=native -Wall
 PKGS = libavformat libavcodec libavutil libswscale libswresample libass sdl2
 LIBS = $(shell pkg-config --cflags --libs $(PKGS)) -lm
 
