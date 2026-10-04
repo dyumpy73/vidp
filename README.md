@@ -16,6 +16,8 @@ A lightweight, single-threaded media player built in C using **FFmpeg**, **SDL2*
 - **Multi-Backend Hardware Acceleration**: Hardware decoding support with fallback priority (VAAPI, CUDA, VDPAU) to software decoding
 - **Advanced Subtitle Rendering**: Native ASS/SSA subtitle support with soft-shadows and styling powered by `libass`.
 - **A/V Synchronization**: Audio/Video clock synchronization algorithm with frame-dropping and latency compensation.
+- **Robust Audio Pipeline**: 256 KB ring buffer (~1.3 s @ 48 kHz stereo) with "drop-oldest" overflow strategy to survive video-sync blocking without stutter.
+- **Dynamic Resolution Support**: Handles mid-playback resolution changes (mixed-resolution anime, OVA, compilation movies) by re-initializing scaler, texture, and subtitle surface on the fly.
 - **Playlist & Directory Scanning**: Automatically builds and sorts playlists from directory inputs or multiple file arguments.
 - **Low Memory Overhead**: Conservative working set memory footprint optimized with deterministic allocation cleanup (malloc_trim).
 ---
@@ -43,12 +45,15 @@ You can build the project using `make`:
 
 ```bash
 # Build the executable
+make
+
+# Install to system (optional, requires root)
 sudo make install
 
 # Clean build artifacts
 make clean
 
-# Uninstall the executable
+# Uninstall from system
 sudo make uninstall
 ```
 
@@ -76,6 +81,8 @@ vidp path/to/anime_folder/
 vidp episode1.mkv episode2.mkv episode3.mkv
 ```
 
+> **Note:** VidP handles mid-stream resolution changes automatically (e.g. 720p opening → 1080p main content). You'll see a log line like `[VidP] Dynamic resolution change: 1280x720 -> 1920x1080` when this happens.
+
 ---
 
 ## Keyboard Shortcuts
@@ -101,7 +108,18 @@ vidp episode1.mkv episode2.mkv episode3.mkv
 - **Single-Threaded Event Loop**: The decoder, audio-push mechanism, subtitle pipeline, and window event handling all reside in a unified loop to keep state transitions perfectly predictable.
 - **Zero-Copy VRAM Discarding**: Fast seeking optimization on long-GOP streams (e.g., HEVC/x265). Discards pre-target frames directly in GPU memory before invoking PCIe transfers via `av_hwframe_transfer_data`, eliminating seek latency.
 - **Dynamic NV12/IYUV Texture Allocation**: Dynamically switches SDL texture pixel formats on-the-fly to match hardware acceleration outputs (NV12) or software decoding fallbacks (IYUV).
+- **Dynamic Resolution Handling**: Detects mid-stream resolution changes (common in mixed-resolution anime) and safely re-allocates the scaler context, video texture, and subtitle surface without leaking or crashing.
+- **Full-Screen Subtitle Surface**: Subtitle rendering uses a fixed-size RGBA surface matching the video display rect. This trades ~8 MB constant memory (1080p) for elimination of per-frame `realloc()` churn — a net win on long playback sessions.
 - **Memory Recycling**: Explicit resource teardown routines (`player_close_file`) free audio buffers, hardware textures, decoders, and force glibc arena compaction via `malloc_trim(0)` between track switches.
+
+---
+
+## Known Limitations
+
+- Single audio track only — no runtime track switching.
+- No subtitle delay adjustment (subtitle sync offset).
+- No hardware-accelerated subtitle blending (rendering is done on CPU via libass).
+- Audio device is not re-initialized on mid-stream channel layout change (stereo → 5.1).
 
 ---
 
