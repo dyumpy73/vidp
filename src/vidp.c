@@ -256,13 +256,10 @@ static void player_reset_audio_buffer(AudioBuffer *audio_buf) {
   SDL_UnlockMutex(audio_buf->lock);
 }
 
-// [PATCH] Fast RGBA32 blending: direct pack, tanpa SDL_GetRGBA/MapRGBA.
-// Surface selalu SDL_PIXELFORMAT_RGBA32 (ABGR8888 little-endian).
 static inline void blend_ass_pixel(uint32_t *pixel, uint8_t r, uint8_t g, uint8_t b, uint8_t final_a) {
   uint32_t px = *pixel;
   uint8_t ex_a = (px >> 24) & 0xFF;
 
-  // Fast path: opaque pixel atau target kosong
   if (final_a == 255 || ex_a == 0) {
     if (final_a == 0) return;
     *pixel = ((uint32_t)final_a << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | r;
@@ -285,7 +282,6 @@ static inline void blend_ass_pixel(uint32_t *pixel, uint8_t r, uint8_t g, uint8_
 static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect) {
   if (!img || dest_rect->w <= 0 || dest_rect->h <= 0) return;
 
-  // [PATCH] Render di resolusi tereduksi
   int target_w = dest_rect->w / SUBTITLE_RENDER_SCALE;
   int target_h = dest_rect->h / SUBTITLE_RENDER_SCALE;
   if (target_w < 1) target_w = 1;
@@ -315,13 +311,11 @@ static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *des
     ctx->prev_sub_valid = 0;
   }
 
-  // [PATCH] Hitung bbox dalam koordinat half-res
   int min_x = target_w, min_y = target_h;
   int max_x = 0, max_y = 0;
 
   ASS_Image *curr = img;
   while (curr) {
-    // [PATCH] Culling: skip layer yang gak akan kelihatan
     if (curr->type != 3 && curr->w > 0 && curr->h > 0) {
       uint8_t a = 255 - (curr->color & 0xFF);
       if (a > 0) {
@@ -364,7 +358,6 @@ static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *des
   if (max_x > target_w) max_x = target_w;
   if (max_y > target_h) max_y = target_h;
 
-  // Union dengan bbox frame sebelumnya (biar gak ghosting)
   int u_min_x = min_x, u_min_y = min_y, u_max_x = max_x, u_max_y = max_y;
   if (ctx->prev_sub_valid) {
     if (ctx->prev_sub_min_x < u_min_x) u_min_x = ctx->prev_sub_min_x;
@@ -391,9 +384,8 @@ static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *des
       uint8_t b = (curr->color >> 8) & 0xFF;
       uint8_t a = 255 - (curr->color & 0xFF);
 
-      if (a == 0) { curr = curr->next; continue; }  // culling
+      if (a == 0) { curr = curr->next; continue; }
 
-      // [PATCH] Scale koordinat & ukuran layer ke half-res
       int layer_dx = curr->dst_x / SUBTITLE_RENDER_SCALE;
       int layer_dy = curr->dst_y / SUBTITLE_RENDER_SCALE;
       int layer_w  = curr->w / SUBTITLE_RENDER_SCALE;
@@ -405,7 +397,6 @@ static void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *des
         int dst_y = layer_dy + y;
         if (dst_y < 0 || dst_y >= target_h) continue;
 
-        // [PATCH] Sampling bitmap libass dengan nearest-neighbor (cepat)
         int src_y = y * SUBTITLE_RENDER_SCALE;
         if (src_y >= curr->h) src_y = curr->h - 1;
         const uint8_t *bmp_row = curr->bitmap + src_y * curr->stride;
@@ -565,14 +556,34 @@ static int player_init_display(PlayerContext *ctx, const char *title) {
                                 ctx->width, ctx->height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
   if (!ctx->window) return 0;
 
-  ctx->renderer = SDL_CreateRenderer(ctx->window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-  if (!ctx->renderer) ctx->renderer = SDL_CreateRenderer(ctx->window, -1, 0);
+  const char *drivers[] = { "vulkan", "opengl", "opengles2", NULL };
+  ctx->renderer = NULL;
+
+  for (int i = 0; drivers[i] != NULL; i++) {
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, drivers[i]);
+    ctx->renderer = SDL_CreateRenderer(ctx->window, -1, SDL_RENDERER_ACCELERATED);
+
+    if (ctx->renderer) {
+      printf("[VidP] Active renderer using backend: %s\n", drivers[i]);
+      break;
+    }
+  }
+
+  if (!ctx->renderer) {
+    SDL_ResetHint(SDL_HINT_RENDER_DRIVER);
+    ctx->renderer = SDL_CreateRenderer(ctx->window, -1, 0);
+    if (ctx->renderer) {
+      printf("[VidP] Fallback: Using default/software SDL renderer.\n");
+    }
+  }
+
   if (!ctx->renderer) return 0;
 
   ctx->texture = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, ctx->width, ctx->height);
   if (ctx->texture) {
     SDL_SetTextureScaleMode(ctx->texture, SDL_ScaleModeLinear);
   }
+
   return ctx->texture != NULL;
 }
 
@@ -633,6 +644,7 @@ static int player_open_file(PlayerContext *ctx, const char *filepath, int index,
   ctx->hw_pix_fmt = AV_PIX_FMT_NONE;
 
   static const enum AVHWDeviceType linux_hw_priority[] = {
+      AV_HWDEVICE_TYPE_VULKAN,
       AV_HWDEVICE_TYPE_VAAPI,
       AV_HWDEVICE_TYPE_CUDA,
       AV_HWDEVICE_TYPE_VDPAU,

@@ -6,6 +6,8 @@ A lightweight, single-threaded media player built in C using **FFmpeg**, **SDL2*
 ![FFmpeg](https://img.shields.io/badge/Library-FFmpeg-green.svg)
 ![SDL2](https://img.shields.io/badge/Library-SDL2-blue.svg)
 ![libass](https://img.shields.io/badge/Library-libass-red.svg)
+![Vulkan](https://img.shields.io/badge/API-Vulkan-red.svg)
+![OpenGL](https://img.shields.io/badge/API-OpenGL-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-brightgreen.svg)
 
 ---
@@ -13,7 +15,8 @@ A lightweight, single-threaded media player built in C using **FFmpeg**, **SDL2*
 ## Features
 
 - **Single-Threaded Architecture**: Eliminates race conditions and concurrency overhead while maintaining smooth playback.
-- **Multi-Backend Hardware Acceleration**: Hardware decoding support with fallback priority (VAAPI, CUDA, VDPAU) to software decoding
+- **Multi-Backend Hardware Acceleration**: Hardware decoding support with fallback priority (Vulkan, VAAPI, CUDA, VDPAU) to software decoding.
+- **Auto-Switching Display Backend**: Seamlessly initializes the best available GPU renderer (Vulkan -> OpenGL -> OpenGLES2) with automatic software fallback.
 - **Advanced Subtitle Rendering**: Native ASS/SSA subtitle support with soft-shadows and styling powered by `libass`.
 - **A/V Synchronization**: Audio/Video clock synchronization algorithm with frame-dropping and latency compensation.
 - **Robust Audio Pipeline**: 256 KB ring buffer (~1.3 s @ 48 kHz stereo) with "drop-oldest" overflow strategy to survive video-sync blocking without stutter.
@@ -106,6 +109,7 @@ vidp episode1.mkv episode2.mkv episode3.mkv
 ## Technical Highlights
 
 - **Single-Threaded Event Loop**: The decoder, audio-push mechanism, subtitle pipeline, and window event handling all reside in a unified loop to keep state transitions perfectly predictable.
+- **Dynamic Renderer Fallback**: Automatically negotiates GPU rendering backends at runtime via SDL2 hints, ensuring Vulkan/OpenGL acceleration on modern drivers while maintaining compatibility with legacy system.
 - **Zero-Copy VRAM Discarding**: Fast seeking optimization on long-GOP streams (e.g., HEVC/x265). Discards pre-target frames directly in GPU memory before invoking PCIe transfers via `av_hwframe_transfer_data`, eliminating seek latency.
 - **Dynamic NV12/IYUV Texture Allocation**: Dynamically switches SDL texture pixel formats on-the-fly to match hardware acceleration outputs (NV12) or software decoding fallbacks (IYUV).
 - **Dynamic Resolution Handling**: Detects mid-stream resolution changes (common in mixed-resolution anime) and safely re-allocates the scaler context, video texture, and subtitle surface without leaking or crashing.
