@@ -535,6 +535,18 @@ static enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelF
       return *p;
     }
   }
+
+  for (p = pix_fmts; *p != -1; p++) {
+    switch (*p) {
+      case AV_PIX_FMT_YUV420P:
+      case AV_PIX_FMT_NV12:
+      case AV_PIX_FMT_YUVJ420P:
+        return *p;
+      default:
+        break;
+    }
+  }
+
   return pix_fmts[0];
 }
 
@@ -1178,18 +1190,7 @@ static void player_reset_subtitle_state(PlayerContext *ctx) {
   ctx->prev_sub_max_x = ctx->prev_sub_max_y = 0;
 
   if (ctx->ass_renderer) {
-    ass_renderer_done(ctx->ass_renderer);
-    ctx->ass_renderer = NULL;
-  }
-  if (ctx->ass_library) {
-    ctx->ass_renderer = ass_renderer_init(ctx->ass_library);
-    if (ctx->ass_renderer) {
-      ass_set_storage_size(ctx->ass_renderer, ctx->width, ctx->height);
-      ass_set_hinting(ctx->ass_renderer, ASS_HINTING_NONE);
-      ass_set_shaper(ctx->ass_renderer, ASS_SHAPING_COMPLEX);
-      ass_set_fonts(ctx->ass_renderer, NULL, "Sans", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
-      ass_set_cache_limits(ctx->ass_renderer, 20, 20);
-    }
+    ass_set_storage_size(ctx->ass_renderer, ctx->width, ctx->height);
   }
 }
 
@@ -1229,6 +1230,7 @@ static void player_switch_subtitle(PlayerContext *ctx) {
     if (sub_par->extradata && sub_par->extradata_size > 0) {
       ass_process_codec_private(ctx->ass_track, (char *)sub_par->extradata, sub_par->extradata_size);
     }
+    player_do_seek(ctx, ctx->last_video_time);
   }
 }
 
@@ -1299,14 +1301,18 @@ static void player_handle_events(PlayerContext *ctx, int *global_quit, int *play
           player_do_seek(ctx, ctx->last_video_time - SEEK_STEP_SEC);
           break;
         case SDLK_n:
-          if (ctx->playlist_index_ref && (*ctx->playlist_index_ref + 1 >= ctx->playlist_count)) {
-            *ctx->playlist_index_ref = -2;
+          if (*playlist_index + 1 >= ctx->playlist_count) {
+            *playlist_index = -2;
           }
           ctx->file_finished = 1;
           break;
         case SDLK_p:
-          *playlist_index = (*playlist_index > 0) ? *playlist_index - 2 : -2;
-          ctx->file_finished = 1;
+          if (*playlist_index > 0) {
+            *playlist_index = (*playlist_index > 0) ? *playlist_index - 2 : -2;
+            ctx->file_finished = 1;
+          } else {
+            player_do_seek(ctx, 0.0);
+          }
           break;
         case SDLK_v:
           ctx->subtitle_visible = !ctx->subtitle_visible;
