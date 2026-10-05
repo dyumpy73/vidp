@@ -597,7 +597,7 @@ static int player_init_display(PlayerContext *ctx, const char *title) {
                                 ctx->width, ctx->height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
   if (!ctx->window) return 0;
 
-  const char *drivers[] = { "vulkan", "opengl", "opengles2", NULL };
+  const char *drivers[] = { "opengl", "opengles2", "vulkan", NULL };
   ctx->renderer = NULL;
 
   for (int i = 0; drivers[i] != NULL; i++) {
@@ -692,7 +692,6 @@ static int player_open_file(PlayerContext *ctx, const char *filepath, int index,
   ctx->hw_pix_fmt = AV_PIX_FMT_NONE;
 
   static const enum AVHWDeviceType linux_hw_priority[] = {
-      AV_HWDEVICE_TYPE_VULKAN,
       AV_HWDEVICE_TYPE_VAAPI,
       AV_HWDEVICE_TYPE_CUDA,
       AV_HWDEVICE_TYPE_VDPAU,
@@ -1252,12 +1251,14 @@ static void player_handle_events(PlayerContext *ctx, int *global_quit, int *play
     if (event.type == SDL_WINDOWEVENT) {
       if (event.window.event == SDL_WINDOWEVENT_ENTER ||
           event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED ||
-          event.window.event == SDL_WINDOWEVENT_RESIZED) {
+          event.window.event == SDL_WINDOWEVENT_RESIZED ||
+          event.window.event == SDL_WINDOWEVENT_EXPOSED) {
         ctx->last_mouse_move = SDL_GetTicks();
         if (ctx->cursor_hidden) {
           SDL_SetCursor(SDL_GetDefaultCursor());
           ctx->cursor_hidden = 0;
         }
+        ctx->prev_sub_valid = 0;
       }
     }
 

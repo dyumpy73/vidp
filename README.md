@@ -6,8 +6,6 @@ A lightweight, single-threaded media player built in C using **FFmpeg**, **SDL2*
 ![FFmpeg](https://img.shields.io/badge/Library-FFmpeg-green.svg)
 ![SDL2](https://img.shields.io/badge/Library-SDL2-blue.svg)
 ![libass](https://img.shields.io/badge/Library-libass-red.svg)
-![Vulkan](https://img.shields.io/badge/API-Vulkan-red.svg)
-![OpenGL](https://img.shields.io/badge/API-OpenGL-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-brightgreen.svg)
 
 ---
@@ -15,8 +13,8 @@ A lightweight, single-threaded media player built in C using **FFmpeg**, **SDL2*
 ## Features
 
 - **Single-Threaded Architecture**: Eliminates race conditions and concurrency overhead while maintaining smooth playback.
-- **Multi-Backend Hardware Acceleration**: Hardware decoding support with fallback priority (Vulkan, VAAPI, CUDA, VDPAU) to software decoding.
-- **Auto-Switching Display Backend**: Seamlessly initializes the best available GPU renderer (Vulkan -> OpenGL -> OpenGLES2) with automatic software fallback.
+- **Multi-Backend Hardware Acceleration**: Hardware decoding support with fallback priority (VAAPI, CUDA, VDPAU) to software decoding.
+- **Auto-Switching Display Backend**: Seamlessly initializes the best available GPU renderer (OpenGL -> OpenGLES2 -> Vulkan) with automatic software fallback.
 - **Advanced Subtitle Rendering**: Native ASS/SSA subtitle support with soft-shadows and styling powered by `libass`.
 - **A/V Synchronization**: Audio/Video clock synchronization algorithm with frame-dropping and latency compensation.
 - **Robust Audio Pipeline**: 256 KB ring buffer (~1.3 s @ 48 kHz stereo) with "drop-oldest" overflow strategy to survive video-sync blocking without stutter.
