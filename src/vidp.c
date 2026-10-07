@@ -1181,7 +1181,6 @@ static void player_handle_events(PlayerContext *ctx, int *global_quit, int *play
           SDL_SetCursor(SDL_GetDefaultCursor());
           ctx->cursor_hidden = 0;
         }
-        ctx->prev_sub_valid = 0;
       }
     }
 
@@ -1311,7 +1310,7 @@ int main(int argc, char *argv[]) {
 
   printf("[VidP] Playlist loaded with %d file(s).\n", playlist_count);
 
-  SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+  SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "2");
   SDL_SetHint("SDL_RENDER_YUV_COLOR_SPACE", "bt709");
 
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER)) {
