@@ -12,11 +12,11 @@ A lightweight, single-threaded media player built in C using **FFmpeg**, **SDL2*
 
 ## Features
 
-- **Single-Threaded Architecture**: Eliminates race conditions and concurrency overhead while maintaining smooth playback.
+- **Single-Threaded Application Loop**: Application logic (demux, sync, render, event handling) runs in a single thread, eliminating application-level race conditions. FFmpeg internal decoder threads (2) and SDL audio callback thread remain as isolated subsystems.
 - **Multi-Backend Hardware Acceleration**: Hardware decoding support with fallback priority (VAAPI, CUDA, VDPAU) to software decoding.
 - **Auto-Switching Display Backend**: Seamlessly initializes the best available GPU renderer (OpenGL -> OpenGLES2 -> Vulkan) with automatic software fallback.
 - **Advanced Subtitle Rendering**: Native ASS/SSA subtitle support with soft-shadows and styling powered by `libass`.
-- **A/V Synchronization**: Audio/Video clock synchronization algorithm with frame-dropping and latency compensation.
+- **A/V Synchronization**: Wall-clock based sync with frame dropping and latency compensation. Video frame PTS is compared against monotonic system time, with automatic clock re-anchoring when drift exceeds 100 ms.
 - **Robust Audio Pipeline**: 256 KB ring buffer (~1.3 s @ 48 kHz stereo) with "drop-oldest" overflow strategy to survive video-sync blocking without stutter.
 - **Dynamic Resolution Support**: Handles mid-playback resolution changes (mixed-resolution anime, OVA, compilation movies) by re-initializing scaler, texture, and subtitle surface on the fly.
 - **Playlist & Directory Scanning**: Automatically builds and sorts playlists from directory inputs or multiple file arguments.
@@ -108,7 +108,7 @@ vidp episode1.mkv episode2.mkv episode3.mkv
 
 - **Single-Threaded Event Loop**: The decoder, audio-push mechanism, subtitle pipeline, and window event handling all reside in a unified loop to keep state transitions perfectly predictable.
 - **Dynamic Renderer Fallback**: Automatically negotiates GPU rendering backends at runtime via SDL2 hints, ensuring Vulkan/OpenGL acceleration on modern drivers while maintaining compatibility with legacy system.
-- **Zero-Copy VRAM Discarding**: Fast seeking optimization on long-GOP streams (e.g., HEVC/x265). Discards pre-target frames directly in GPU memory before invoking PCIe transfers via `av_hwframe_transfer_data`, eliminating seek latency.
+- **Pre-Transfer Frame Discarding**: During seek, frames before the target PTS are dropped while still in GPU memory (before `av_hwframe_transfer_data`), avoiding unnecessary PCIe round-trips on long-GOP HEVC/x265 streams.
 - **Dynamic NV12/IYUV Texture Allocation**: Dynamically switches SDL texture pixel formats on-the-fly to match hardware acceleration outputs (NV12) or software decoding fallbacks (IYUV).
 - **Dynamic Resolution Handling**: Detects mid-stream resolution changes (common in mixed-resolution anime) and safely re-allocates the scaler context, video texture, and subtitle surface without leaking or crashing.
 - **Full-Screen Subtitle Surface**: Subtitle rendering uses a fixed-size RGBA surface matching the video display rect. This trades ~8 MB constant memory (1080p) for elimination of per-frame `realloc()` churn — a net win on long playback sessions.

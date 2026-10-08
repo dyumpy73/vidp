@@ -1,5 +1,4 @@
 CC = gcc
-CFLAGS = -O3 -march=native -Wall
 PKGS = libavformat libavcodec libavutil libswscale libswresample libass sdl2
 LIBS = $(shell pkg-config --cflags --libs $(PKGS)) -lm
 
@@ -10,9 +9,15 @@ all: $(TARGET)
 
 $(TARGET): $(SRC)
 	$(CC) $(CFLAGS) $(SRC) -o $(TARGET) $(LIBS)
+
+debug: $(SRC)
+	$(CC) -g -O0 -Wall -Wextra $(SRC) -o $(TARGET) $(LIBS)
+
+release: $(SRC)
+	$(CC) -O2 -Wall -Wextra $(SRC) -o $(TARGET) $(LIBS)
 	strip $(TARGET)
 
-install: $(TARGET)
+install: release
 	install -Dm755 $(TARGET) /usr/local/bin/$(TARGET)
 
 uninstall:
@@ -21,4 +26,4 @@ uninstall:
 clean:
 	rm -f $(TARGET)
 
-.PHONY: all install uninstall clean
+.PHONY: all debug release install uninstall clean
