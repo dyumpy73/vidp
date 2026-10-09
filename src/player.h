@@ -1,3 +1,6 @@
+#ifndef VIDP_PLAYER_H
+#define VIDP_PLAYER_H
+
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -30,7 +33,7 @@
 #define AV_SYNC_DELAY_THRESHOLD  0.002
 #define SUBTITLE_RENDER_SCALE   1
 #define MAX_SUBTITLE_STREAM     32
-#define SUBTITLE_PREROLL_SEC    5.0
+#define SUBTITLE_PREROLL_SEC    1.5
 
 typedef struct {
   uint8_t buffer[AUDIO_BUFFER_SIZE];
@@ -115,13 +118,45 @@ typedef struct {
   int sub_tmp_cap;
 } PlayerContext;
 
-static void player_handle_events(PlayerContext *ctx, int *global_quit, int *playlist_index);
+/* ---- utils.c ---- */
+double get_monotonic_time(void);
+void trim_memory(void);
+int is_media_file(const char *filename);
+int compare_strings(const void *a, const void *b);
+SDL_Cursor* create_blank_cursor(void);
 
- 
-static 
-static 
-static 
-static 
-static 
-static 
+/* ---- playlist.c ---- */
+void build_playlist(int argc, char *argv[], char ***playlist, int *count);
+void free_playlist(char **playlist, int count);
 
+/* ---- video.c ---- */
+enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts);
+int player_init_display(PlayerContext *ctx, const char *title);
+void player_check_dynamic_resolution(PlayerContext *ctx, AVFrame *render_frame);
+void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame);
+void player_receive_video_frames(PlayerContext *ctx);
+void player_process_video_packet(PlayerContext *ctx);
+
+/* ---- audio.c ---- */
+int player_init_audio(PlayerContext *ctx);
+void player_receive_audio_frames(PlayerContext *ctx);
+void player_process_audio_packet(PlayerContext *ctx);
+void player_reset_audio_buffer(AudioBuffer *audio_buf);
+
+/* ---- subtitle.c ---- */
+void player_init_subtitles(PlayerContext *ctx);
+void player_process_subtitle_packet(PlayerContext *ctx);
+void player_reset_subtitle_state(PlayerContext *ctx);
+void player_switch_subtitle(PlayerContext *ctx);
+void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect);
+
+/* ---- player.c ---- */
+int  player_open_file(PlayerContext *ctx, const char *filepath, int index, int total);
+void player_close_file(PlayerContext *ctx);
+void player_run_loop(PlayerContext *ctx, int *global_quit, int *playlist_index);
+void player_do_seek(PlayerContext *ctx, double target_sec);
+void player_sleep_pumping(PlayerContext *ctx, double seconds);
+void player_handle_events(PlayerContext *ctx, int *global_quit, int *playlist_index);
+void player_present_frame(PlayerContext *ctx);
+
+#endif /* VIDP_PLAYER_H */
