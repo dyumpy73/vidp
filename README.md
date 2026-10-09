@@ -16,11 +16,25 @@ A lightweight, single-threaded media player built in C using **FFmpeg**, **SDL2*
 - **Multi-Backend Hardware Acceleration**: Hardware decoding support with fallback priority (VAAPI, CUDA, VDPAU) to software decoding.
 - **Auto-Switching Display Backend**: Seamlessly initializes the best available GPU renderer (OpenGL -> OpenGLES2 -> Vulkan) with automatic software fallback.
 - **Advanced Subtitle Rendering**: Native ASS/SSA subtitle support with soft-shadows and styling powered by `libass`.
-- **A/V Synchronization**: Wall-clock based sync with frame dropping and latency compensation. Video frame PTS is compared against monotonic system time, with automatic clock re-anchoring when drift exceeds 100 ms.
+- **Wall-Clock A/V Synchronization**: Video frame PTS is compared against  monotonic system time, with automatic clock re-anchoring when drift exceeds 100 ms. Includes frame dropping and delay compensation for transient timing spikes.
 - **Robust Audio Pipeline**: 256 KB ring buffer (~1.3 s @ 48 kHz stereo) with "drop-oldest" overflow strategy to survive video-sync blocking without stutter.
 - **Dynamic Resolution Support**: Handles mid-playback resolution changes (mixed-resolution anime, OVA, compilation movies) by re-initializing scaler, texture, and subtitle surface on the fly.
 - **Playlist & Directory Scanning**: Automatically builds and sorts playlists from directory inputs or multiple file arguments.
 - **Low Memory Overhead**: Conservative working set memory footprint optimized with deterministic allocation cleanup (malloc_trim).
+
+---
+
+## Architecture
+
+- `src/main.c`      — entry point, playlist loop
+- `src/player.c`    — orchestration: open/close/run loop, seek, events
+- `src/video.c`     — video decode + render + HW accel
+- `src/audio.c`     — audio decode + ring buffer + resample
+- `src/subtitle.c`  — libass integration, parallel track rendering
+- `src/playlist.c`  — directory scanning, playlist building
+- `src/utils.c`     — common utilities
+- `src/player.h`    — shared types and declarations
+
 ---
 
 ## Dependencies
