@@ -18,7 +18,7 @@ with FFmpeg and SDL handling their own isolated internal threads.
 - **Multi-Backend Hardware Acceleration (Linux)**: Hardware decoding with priority fallback VAAPI → CUDA → VDPAU → software. Non-Linux platforms currently use software decoding only.
 - **Auto-Switching Display Backend**: Seamlessly initializes the best available GPU renderer (OpenGL -> OpenGLES2 -> Vulkan) with automatic software fallback.
 - **Advanced Subtitle Rendering**: Native ASS/SSA subtitle support with soft-shadows and styling powered by `libass`.
-- **Wall-Clock A/V Synchronization**: Video frame PTS is compared against  monotonic system time, with automatic clock re-anchoring when drift exceeds 100 ms. Includes frame dropping and delay compensation for transient timing spikes.
+- **Wall-Clock A/V Synchronization**: Video frame PTS is compared against monotonic system time, with automatic clock re-anchoring when drift exceeds 100 ms. Includes frame dropping and delay compensation for transient timing spikes.
 - **Robust Audio Pipeline**: 256 KB ring buffer (~1.3 s @ 48 kHz stereo) with "drop-oldest" overflow strategy to survive fast demuxing. Prolonged video-sync stalls beyond the buffer length can still cause brief underrun.
 - **Dynamic Resolution Support**: Handles mid-playback resolution changes (mixed-resolution anime, OVA, compilation movies) by re-initializing scaler, texture, and subtitle surface on the fly.
 - **Seek with Subtitle Pre-Roll**: Rewinds a configurable pre-roll duration (default 5 s) before the target PTS so subtitle chunks that overlap the seek point are correctly loaded.
