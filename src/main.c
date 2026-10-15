@@ -11,7 +11,7 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  av_log_set_level(AV_LOG_QUIET);
+  av_log_set_level(AV_LOG_ERROR);
 
   char **playlist = NULL;
   int playlist_count = 0;
@@ -46,8 +46,8 @@ int main(int argc, char *argv[]) {
     }
 
     player_close_file(&ctx);
-    if (playlist_index == -2) {
-      playlist_index = 0;
+    if (ctx.nav_action == NAV_PREV && playlist_index > 0) {
+      playlist_index--;
     } else {
       playlist_index++;
     }

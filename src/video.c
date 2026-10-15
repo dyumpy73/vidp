@@ -24,12 +24,30 @@ enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *
 }
 
 int player_init_display(PlayerContext *ctx, const char *title) {
+  double disp_w = (double)ctx->width * ctx->sar_ratio;
+  double disp_h = (double)ctx->height;
+  if (ctx->rotation == 90 || ctx->rotation == 270) {
+    double t = disp_w; disp_w = disp_h; disp_h = t;
+  }
+  SDL_Rect usable;
+  if (SDL_GetDisplayUsableBounds(0, &usable) == 0 && usable.w > 0 && usable.h > 0) {
+    double sx = (usable.w * 0.9) / disp_w;
+    double sy = (usable.h * 0.9) / disp_h;
+    double scale = sx < sy ? sx : sy;
+    if (scale < 1.0) {
+      disp_w *= scale;
+      disp_h *= scale;
+    }
+  }
+  int win_w = (int)disp_w; if (win_w < 64) win_w = 64;
+  int win_h = (int)disp_h; if (win_h < 64) win_h = 64;
+
   ctx->window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                ctx->width, ctx->height,
+                                win_w, win_h,
                                 SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
   if (!ctx->window) return 0;
 
-  const char *drivers[] = { "opengl", "opengles2", "vulkan", NULL };
+  const char *drivers[] = { "opengl", "opengles2", NULL };
   ctx->renderer = NULL;
 
   for (int i = 0; drivers[i] != NULL; i++) {
@@ -96,16 +114,19 @@ void player_check_dynamic_resolution(PlayerContext *ctx, AVFrame *render_frame) 
     ctx->sub_tex = NULL;
   }
 
-  if (ctx->ass_renderer) {
-    ass_set_storage_size(ctx->ass_renderer, ctx->width, ctx->height);
-  }
+  player_update_ass_storage(ctx);
 }
 
 void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
   AVFrame *final_frame = render_frame;
 
-  if (render_frame->format != AV_PIX_FMT_YUV420P &&
-      render_frame->format != AV_PIX_FMT_NV12) {
+  int negative_stride = render_frame->linesize[0] < 0 ||
+                        render_frame->linesize[1] < 0 ||
+                        render_frame->linesize[2] < 0;
+
+  if (negative_stride ||
+      (render_frame->format != AV_PIX_FMT_YUV420P &&
+       render_frame->format != AV_PIX_FMT_NV12)) {
     if (!ctx->frame_yuv) {
       ctx->frame_yuv = av_frame_alloc();
       if (!ctx->frame_yuv) return;
@@ -198,8 +219,16 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
   player_present_frame(ctx);
 }
 
+static int should_stop_video(PlayerContext *ctx) {
+  if (ctx->seek_requested || ctx->file_finished) return 1;
+  if (ctx->global_quit_ref && *ctx->global_quit_ref) return 1;
+  if (ctx->paused && !ctx->step_pending) return 1;
+  return 0;
+}
+
 void player_receive_video_frames(PlayerContext *ctx) {
-  while (avcodec_receive_frame(ctx->v_codec_ctx, ctx->frame_video) == 0) {
+  while (!should_stop_video(ctx) &&
+         avcodec_receive_frame(ctx->v_codec_ctx, ctx->frame_video) == 0) {
     AVStream *st = ctx->fmt_ctx->streams[ctx->video_stream];
     int64_t pts = ctx->frame_video->best_effort_timestamp;
     double video_time = (pts != AV_NOPTS_VALUE) ? pts * av_q2d(st->time_base) : -1.0;
@@ -235,33 +264,56 @@ void player_receive_video_frames(PlayerContext *ctx) {
     if (video_time >= 0.0) {
       ctx->last_video_time = video_time;
 
-      if (!ctx->video_clock_started) {
+      double delay;
+      double drop_threshold;
+      double audio_clock = player_get_audio_clock(ctx);
+
+      if (audio_clock >= 0.0) {
+        delay = video_time - audio_clock;
+        drop_threshold = AV_SYNC_DROP_AUDIO;
+        if (delay > AV_SYNC_THRESHOLD_MAX) delay = AV_SYNC_THRESHOLD_MAX;
+        ctx->playback_start_wall = get_monotonic_time() + (delay > 0.0 ? delay : 0.0);
         ctx->first_video_time = video_time;
-        ctx->playback_start_wall = get_monotonic_time();
         ctx->video_clock_started = 1;
+      } else {
+        if (!ctx->video_clock_started) {
+          ctx->first_video_time = video_time;
+          ctx->playback_start_wall = get_monotonic_time();
+          ctx->video_clock_started = 1;
+        }
+        double target_time = ctx->playback_start_wall + (video_time - ctx->first_video_time);
+        delay = target_time - get_monotonic_time();
+        drop_threshold = AV_SYNC_DROP_THRESHOLD;
+
+        if (delay > AV_SYNC_THRESHOLD_MAX || delay < AV_SYNC_THRESHOLD_MIN) {
+          ctx->playback_start_wall = get_monotonic_time();
+          ctx->first_video_time = video_time;
+          delay = 0.0;
+        }
       }
 
-      double target_time = ctx->playback_start_wall + (video_time - ctx->first_video_time);
-      double delay = target_time - get_monotonic_time();
-
-      if (delay > AV_SYNC_THRESHOLD_MAX || delay < AV_SYNC_THRESHOLD_MIN) {
-        ctx->playback_start_wall = get_monotonic_time();
-        ctx->first_video_time = video_time;
-        delay = 0.0;
-      }
-
-      if (delay < AV_SYNC_DROP_THRESHOLD) {
+      if (delay < drop_threshold && ctx->consecutive_drops < 15) {
+        ctx->consecutive_drops++;
         av_frame_unref(ctx->frame_video);
         if (sw_frame) av_frame_free(&sw_frame);
         continue;
       }
+      ctx->consecutive_drops = 0;
 
       if (delay > AV_SYNC_DELAY_THRESHOLD) {
         player_sleep_pumping(ctx, delay);
+
+        if (ctx->seek_requested || ctx->file_finished ||
+            (ctx->global_quit_ref && *ctx->global_quit_ref)) {
+          av_frame_unref(ctx->frame_video);
+          if (sw_frame) av_frame_free(&sw_frame);
+          return;
+        }
       }
     }
 
     player_render_current_frame(ctx, render_frame);
+    ctx->step_pending = 0;
 
     av_frame_unref(ctx->frame_video);
     if (sw_frame) {

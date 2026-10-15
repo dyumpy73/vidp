@@ -23,13 +23,24 @@ static inline void blend_ass_pixel(uint32_t *pixel, uint8_t r, uint8_t g, uint8_
   }
 }
 
-void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect) {
+void player_update_ass_storage(PlayerContext *ctx) {
+  if (!ctx->ass_renderer) return;
+  int w = ctx->width, h = ctx->height;
+  if (ctx->rotation == 90 || ctx->rotation == 270) {
+    int t = w; w = h; h = t;
+  }
+  ass_set_storage_size(ctx->ass_renderer, w, h);
+}
+
+void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect, int changed) {
   if (!img || dest_rect->w <= 0 || dest_rect->h <= 0) return;
 
   int target_w = dest_rect->w / SUBTITLE_RENDER_SCALE;
   int target_h = dest_rect->h / SUBTITLE_RENDER_SCALE;
   if (target_w < 1) target_w = 1;
   if (target_h < 1) target_h = 1;
+
+  int rebuild = changed;
 
   if (!ctx->sub_surf || ctx->sub_surf->w != target_w || ctx->sub_surf->h != target_h) {
     if (ctx->sub_surf) SDL_FreeSurface(ctx->sub_surf);
@@ -48,6 +59,12 @@ void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect)
     if (!ctx->sub_tex) return;
     SDL_SetTextureBlendMode(ctx->sub_tex, SDL_BLENDMODE_BLEND);
     SDL_SetTextureScaleMode(ctx->sub_tex, SDL_ScaleModeLinear);
+    rebuild = 1;
+  }
+
+  if (!rebuild) {
+    if (ctx->sub_has_pixels) SDL_RenderCopy(ctx->renderer, ctx->sub_tex, NULL, dest_rect);
+    return;
   }
 
   SDL_FillRect(ctx->sub_surf, NULL, 0);
@@ -58,7 +75,7 @@ void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect)
 
   ASS_Image *curr = img;
   while (curr) {
-    if (curr->type != 3 && curr->w > 0 && curr->h > 0) {
+    if (curr->w > 0 && curr->h > 0) {
       uint8_t r = (curr->color >> 24) & 0xFF;
       uint8_t g = (curr->color >> 16) & 0xFF;
       uint8_t b = (curr->color >> 8) & 0xFF;
@@ -102,6 +119,7 @@ void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect)
     curr = curr->next;
   }
 
+  ctx->sub_has_pixels = has_pixels;
   SDL_UpdateTexture(ctx->sub_tex, NULL, ctx->sub_surf->pixels, ctx->sub_surf->pitch);
   if (has_pixels) {
     SDL_RenderCopy(ctx->renderer, ctx->sub_tex, NULL, dest_rect);
@@ -141,10 +159,12 @@ void player_init_subtitles(PlayerContext *ctx) {
   ctx->ass_renderer = ass_renderer_init(ctx->ass_library);
   if (!ctx->ass_renderer) {
     fprintf(stderr, "[VidP] ass_renderer_init failed, subtitles disabled\n");
+    ass_library_done(ctx->ass_library);
+    ctx->ass_library = NULL;
     return;
   }
 
-  ass_set_storage_size(ctx->ass_renderer, ctx->width, ctx->height);
+  player_update_ass_storage(ctx);
   ass_set_hinting(ctx->ass_renderer, ASS_HINTING_NONE);
   ass_set_shaper(ctx->ass_renderer, ASS_SHAPING_COMPLEX);
   ass_set_fonts(ctx->ass_renderer, NULL, "Sans",
@@ -221,9 +241,8 @@ void player_reset_subtitle_state(PlayerContext *ctx) {
     ctx->sub_tex = NULL;
   }
 
-  if (ctx->ass_renderer) {
-    ass_set_storage_size(ctx->ass_renderer, ctx->width, ctx->height);
-  }
+  ctx->sub_has_pixels = 0;
+  player_update_ass_storage(ctx);
 }
 
 void player_switch_subtitle(PlayerContext *ctx) {

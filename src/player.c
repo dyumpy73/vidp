@@ -3,6 +3,13 @@
 void player_do_seek(PlayerContext *ctx, double target_sec) {
   if (target_sec < 0.0) target_sec = 0.0;
 
+  if (ctx->fmt_ctx->duration != AV_NOPTS_VALUE && ctx->fmt_ctx->duration > 0) {
+    double dur = (double)ctx->fmt_ctx->duration / AV_TIME_BASE;
+    double max_target = dur - 1.0;
+    if (max_target < 0.0) max_target = 0.0;
+    if (target_sec > max_target) target_sec = max_target;
+  }
+
   double seek_from_sec = target_sec - SUBTITLE_PREROLL_SEC;
   if (seek_from_sec < 0.0) seek_from_sec = 0.0;
 
@@ -30,7 +37,10 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
   }
 
   player_reset_audio_buffer(&ctx->audio_buf);
-  if (ctx->swr_ctx) swr_init(ctx->swr_ctx);
+  if (ctx->swr_ctx) {
+    swr_close(ctx->swr_ctx);
+    swr_init(ctx->swr_ctx);
+  }
 
   ctx->video_clock_started = 0;
   ctx->first_video_time    = 0.0;
@@ -38,11 +48,17 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
   ctx->last_video_time     = target_sec;
   ctx->discard_until       = target_sec;
   ctx->audio_discard_until = target_sec;
+  ctx->consecutive_drops   = 0;
+  ctx->sub_has_pixels      = 0;
+
+  if (ctx->paused) ctx->step_pending = 1;
 }
 
 int player_open_file(PlayerContext *ctx, const char *filepath, int index, int total) {
   memset(ctx, 0, sizeof(PlayerContext));
   ctx->playlist_count = total;
+  ctx->playlist_index = index;
+  ctx->nav_action = NAV_NEXT;
   ctx->audio_buf.lock = SDL_CreateMutex();
   if (!ctx->audio_buf.lock) return 0;
   ctx->audio_buf.volume = 1.0f;
@@ -64,15 +80,16 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index, int to
 
   ctx->fmt_ctx = avformat_alloc_context();
   if (!ctx->fmt_ctx) return 0;
-  ctx->fmt_ctx->probesize = 1024 * 1024;
-  ctx->fmt_ctx->max_analyze_duration = 1000000;
+  ctx->fmt_ctx->probesize = 4 * 1024 * 1024;
+  ctx->fmt_ctx->max_analyze_duration = 3 * AV_TIME_BASE;
 
   if (avformat_open_input(&ctx->fmt_ctx, filepath, NULL, NULL) != 0) return 0;
   if (avformat_find_stream_info(ctx->fmt_ctx, NULL) < 0) return 0;
 
   for (unsigned int i = 0; i < ctx->fmt_ctx->nb_streams; i++) {
     AVCodecParameters *codecpar = ctx->fmt_ctx->streams[i]->codecpar;
-    if (codecpar->codec_type == AVMEDIA_TYPE_VIDEO && ctx->video_stream < 0)
+    int is_cover = (ctx->fmt_ctx->streams[i]->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0;
+    if (codecpar->codec_type == AVMEDIA_TYPE_VIDEO && ctx->video_stream < 0 && !is_cover)
       ctx->video_stream = i;
     if (codecpar->codec_type == AVMEDIA_TYPE_AUDIO && ctx->audio_stream < 0)
       ctx->audio_stream = i;
@@ -106,8 +123,8 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index, int to
   if (!ctx->v_codec_ctx) return 0;
   if (avcodec_parameters_to_context(ctx->v_codec_ctx, v_par) < 0) return 0;
 
-  ctx->v_codec_ctx->thread_count = 2;
-  ctx->v_codec_ctx->thread_type = FF_THREAD_FRAME;
+  ctx->v_codec_ctx->thread_count = 0;  /* auto */
+  ctx->v_codec_ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
   ctx->v_codec_ctx->opaque = ctx;
   ctx->hw_pix_fmt = AV_PIX_FMT_NONE;
 
@@ -157,8 +174,8 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index, int to
     if (!ctx->v_codec_ctx) return 0;
     if (avcodec_parameters_to_context(ctx->v_codec_ctx, v_par) < 0) return 0;
 
-    ctx->v_codec_ctx->thread_count = 2;
-    ctx->v_codec_ctx->thread_type  = FF_THREAD_FRAME;
+    ctx->v_codec_ctx->thread_count = 0;
+    ctx->v_codec_ctx->thread_type  = FF_THREAD_FRAME | FF_THREAD_SLICE;
     ctx->v_codec_ctx->opaque       = ctx;
 
     if (avcodec_open2(ctx->v_codec_ctx, v_codec, NULL) < 0) return 0;
@@ -284,10 +301,11 @@ void player_close_file(PlayerContext *ctx) {
 void player_sleep_pumping(PlayerContext *ctx, double seconds) {
   double target = get_monotonic_time() + seconds;
   while (get_monotonic_time() < target) {
-    if (ctx->file_finished) return;
+    if (ctx->file_finished || ctx->seek_requested) return;
     if (ctx->global_quit_ref && *ctx->global_quit_ref) return;
     if (ctx->global_quit_ref && ctx->playlist_index_ref) {
       player_handle_events(ctx, ctx->global_quit_ref, ctx->playlist_index_ref);
+      if (ctx->file_finished || ctx->seek_requested) return;
     }
     double remain = target - get_monotonic_time();
     if (remain <= 0.0) break;
@@ -322,7 +340,14 @@ void player_present_frame(PlayerContext *ctx) {
 
   SDL_RenderClear(ctx->renderer);
   if (ctx->rotation != 0) {
-    SDL_RenderCopyEx(ctx->renderer, ctx->texture, NULL, &dest_rect,
+    SDL_Rect r = dest_rect;
+    if (ctx->rotation == 90 || ctx->rotation == 270) {
+      r.w = dest_rect.h;
+      r.h = dest_rect.w;
+      r.x = dest_rect.x + (dest_rect.w - r.w) / 2;
+      r.y = dest_rect.y + (dest_rect.h - r.h) / 2;
+    }
+    SDL_RenderCopyEx(ctx->renderer, ctx->texture, NULL, &r,
                      (double)ctx->rotation, NULL, SDL_FLIP_NONE);
   } else {
     SDL_RenderCopy(ctx->renderer, ctx->texture, NULL, &dest_rect);
@@ -334,7 +359,7 @@ void player_present_frame(PlayerContext *ctx) {
     ass_set_frame_size(ctx->ass_renderer, dest_rect.w, dest_rect.h);
     ASS_Image *sub_img = ass_render_frame(ctx->ass_renderer, ctx->ass_track,
                                           now_ms, &changed);
-    if (sub_img) render_ass_overlay(ctx, sub_img, &dest_rect);
+    if (sub_img) render_ass_overlay(ctx, sub_img, &dest_rect, changed);
   }
 
   SDL_RenderPresent(ctx->renderer);
@@ -371,14 +396,18 @@ void player_handle_events(PlayerContext *ctx, int *global_quit, int *playlist_in
       }
     }
 
-    if (event.type == SDL_KEYDOWN && event.key.repeat == 0) {
+    if (event.type == SDL_KEYDOWN) {
+      if (event.key.repeat &&
+          event.key.keysym.sym != SDLK_UP && event.key.keysym.sym != SDLK_DOWN) {
+        continue;
+      }
       switch (event.key.keysym.sym) {
         case SDLK_ESCAPE:
           *global_quit = 1;
           break;
         case SDLK_f: {
           Uint32 flags = SDL_GetWindowFlags(ctx->window);
-          if (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) {
+          if ((flags & SDL_WINDOW_FULLSCREEN_DESKTOP) == SDL_WINDOW_FULLSCREEN_DESKTOP) {
             SDL_SetWindowFullscreen(ctx->window, 0);
           } else {
             SDL_SetWindowFullscreen(ctx->window, SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -405,23 +434,28 @@ void player_handle_events(PlayerContext *ctx, int *global_quit, int *playlist_in
           SDL_UnlockMutex(ctx->audio_buf.lock);
           break;
         case SDLK_RIGHT:
-          player_do_seek(ctx, ctx->last_video_time + SEEK_STEP_SEC);
+        case SDLK_LEFT: {
+          double base = ctx->seek_requested ? ctx->seek_target : ctx->last_video_time;
+          double step = (event.key.keysym.sym == SDLK_RIGHT) ? SEEK_STEP_SEC : -SEEK_STEP_SEC;
+          ctx->seek_target = base + step;
+          ctx->seek_requested = 1;
           break;
-        case SDLK_LEFT:
-          player_do_seek(ctx, ctx->last_video_time - SEEK_STEP_SEC);
-          break;
+        }
         case SDLK_n:
-          if (*playlist_index + 1 >= ctx->playlist_count) {
-            *playlist_index = -2;
+          if (*playlist_index + 1 < ctx->playlist_count) {
+            ctx->nav_action = NAV_NEXT;
+            ctx->file_finished = 1;
+          } else {
+            printf("[VidP] Already at the last file.\n");
           }
-          ctx->file_finished = 1;
           break;
         case SDLK_p:
           if (*playlist_index > 0) {
-            *playlist_index = (*playlist_index > 0) ? *playlist_index - 2 : -2;
+            ctx->nav_action = NAV_PREV;
             ctx->file_finished = 1;
           } else {
-            player_do_seek(ctx, 0.0);
+            ctx->seek_target = 0.0;
+            ctx->seek_requested = 1;
           }
           break;
         case SDLK_v:
@@ -451,7 +485,13 @@ void player_run_loop(PlayerContext *ctx, int *global_quit, int *playlist_index) 
     }
 
     if (*global_quit || ctx->file_finished) break;
-    if (ctx->paused) {
+
+    if (ctx->seek_requested) {
+      ctx->seek_requested = 0;
+      player_do_seek(ctx, ctx->seek_target);
+    }
+
+    if (ctx->paused && !ctx->step_pending) {
       SDL_Delay(10);
       continue;
     }
@@ -468,17 +508,32 @@ void player_run_loop(PlayerContext *ctx, int *global_quit, int *playlist_index) 
       }
 
       double drain_start = get_monotonic_time();
-      while (!*global_quit) {
-        SDL_LockMutex(ctx->audio_buf.lock);
-        size_t remaining = ctx->audio_buf.size;
-        SDL_UnlockMutex(ctx->audio_buf.lock);
-
-        if (remaining == 0) break;
-        if (get_monotonic_time() - drain_start > 3.0) break;
-        if (ctx->paused) break;
-
+      int seeked = 0;
+      while (!*global_quit && !ctx->file_finished) {
         player_handle_events(ctx, global_quit, playlist_index);
+        if (ctx->seek_requested) { seeked = 1; break; }
+
+        if (!ctx->paused) {
+          SDL_LockMutex(ctx->audio_buf.lock);
+          size_t remaining = ctx->audio_buf.size;
+          SDL_UnlockMutex(ctx->audio_buf.lock);
+
+          if (remaining == 0) break;
+          if (get_monotonic_time() - drain_start > 3.0) break;
+        } else {
+          drain_start = get_monotonic_time();
+        }
         SDL_Delay(20);
+      }
+
+      if (seeked) {
+        av_packet_unref(ctx->packet);
+        continue;
+      }
+
+      if (ctx->audio_dev > 0 && !*global_quit && !ctx->file_finished &&
+          ctx->audio_spec.freq > 0) {
+        SDL_Delay((Uint32)(1000 * ctx->audio_spec.samples / ctx->audio_spec.freq) + 20);
       }
 
       ctx->file_finished = 1;

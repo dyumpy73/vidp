@@ -35,6 +35,13 @@
 #define MAX_SUBTITLE_STREAM     32
 #define SUBTITLE_PREROLL_SEC    1.5
 
+typedef enum {
+  NAV_NEXT = 0,
+  NAV_PREV
+} NavAction;
+
+#define AV_SYNC_DROP_AUDIO     -0.050
+
 typedef struct {
   uint8_t buffer[AUDIO_BUFFER_SIZE];
   size_t write_pos;
@@ -42,6 +49,9 @@ typedef struct {
   size_t size;
   SDL_mutex *lock;
   float volume;
+  double end_pts;
+  int has_pts;
+  int bytes_per_sec;
 } AudioBuffer;
 
 typedef struct {
@@ -113,6 +123,14 @@ typedef struct {
   int *global_quit_ref;
   int *playlist_index_ref;
   int playlist_count;
+  int playlist_index;
+  NavAction nav_action;
+
+  int seek_requested;
+  double seek_target;
+  int step_pending;
+  int consecutive_drops;
+  int sub_has_pixels;
 
   char *sub_tmp;
   int sub_tmp_cap;
@@ -142,13 +160,15 @@ int player_init_audio(PlayerContext *ctx);
 void player_receive_audio_frames(PlayerContext *ctx);
 void player_process_audio_packet(PlayerContext *ctx);
 void player_reset_audio_buffer(AudioBuffer *audio_buf);
+double player_get_audio_clock(PlayerContext *ctx);
 
 /* ---- subtitle.c ---- */
 void player_init_subtitles(PlayerContext *ctx);
 void player_process_subtitle_packet(PlayerContext *ctx);
 void player_reset_subtitle_state(PlayerContext *ctx);
 void player_switch_subtitle(PlayerContext *ctx);
-void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect);
+void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect, int changed);
+void player_update_ass_storage(PlayerContext *ctx);
 
 /* ---- player.c ---- */
 int  player_open_file(PlayerContext *ctx, const char *filepath, int index, int total);
@@ -159,4 +179,4 @@ void player_sleep_pumping(PlayerContext *ctx, double seconds);
 void player_handle_events(PlayerContext *ctx, int *global_quit, int *playlist_index);
 void player_present_frame(PlayerContext *ctx);
 
-#endif /* VIDP_PLAYER_H */
+#endif

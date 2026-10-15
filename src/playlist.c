@@ -1,4 +1,9 @@
 #include "player.h"
+#include <limits.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 static void add_to_playlist(char ***playlist, int *count, const char *filepath) {
   char *dup = strdup(filepath);
@@ -24,7 +29,8 @@ static void scan_directory(const char *dirpath, char ***playlist, int *count) {
   if (!d) return;
 
   struct dirent *dir;
-  char fullpath[1024];
+  char fullpath[PATH_MAX];
+  int start = *count;
   int added_here = 0;
 
   while ((dir = readdir(d)) != NULL) {
@@ -49,7 +55,7 @@ static void scan_directory(const char *dirpath, char ***playlist, int *count) {
   closedir(d);
 
   if (added_here > 0) {
-    qsort(*playlist, *count, sizeof(char *), compare_strings);
+    qsort(*playlist + start, (size_t)(*count - start), sizeof(char *), compare_strings);
   }
 }
 
