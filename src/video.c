@@ -219,6 +219,41 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
   player_present_frame(ctx);
 }
 
+static void player_fallback_to_sw(PlayerContext *ctx) {
+  if (!ctx->fmt_ctx || ctx->video_stream < 0) return;
+
+  AVCodecParameters *v_par = ctx->fmt_ctx->streams[ctx->video_stream]->codecpar;
+  const AVCodec *v_codec = avcodec_find_decoder(v_par->codec_id);
+  if (!v_codec) return;
+
+  fprintf(stderr, "[VidP] Runtime HW failure (%d frames) -> rebuilding SW decoder\n",
+          ctx->hw_transfer_failures);
+
+  avcodec_free_context(&ctx->v_codec_ctx);
+  if (ctx->hw_device_ctx) {
+    av_buffer_unref(&ctx->hw_device_ctx);
+    ctx->hw_device_ctx = NULL;
+  }
+  ctx->is_hw_accel           = 0;
+  ctx->hw_pix_fmt            = AV_PIX_FMT_NONE;
+  ctx->hw_transfer_failures  = 0;
+
+  ctx->v_codec_ctx = avcodec_alloc_context3(v_codec);
+  if (!ctx->v_codec_ctx) return;
+  if (avcodec_parameters_to_context(ctx->v_codec_ctx, v_par) < 0) {
+    avcodec_free_context(&ctx->v_codec_ctx);
+    return;
+  }
+  ctx->v_codec_ctx->thread_count = 0;
+  ctx->v_codec_ctx->thread_type  = FF_THREAD_FRAME | FF_THREAD_SLICE;
+  ctx->v_codec_ctx->opaque       = ctx;
+
+  if (avcodec_open2(ctx->v_codec_ctx, v_codec, NULL) < 0) {
+    avcodec_free_context(&ctx->v_codec_ctx);
+    return;
+  }
+}
+
 static int should_stop_video(PlayerContext *ctx) {
   if (ctx->seek_requested || ctx->file_finished) return 1;
   if (ctx->global_quit_ref && *ctx->global_quit_ref) return 1;
@@ -254,8 +289,14 @@ void player_receive_video_frames(PlayerContext *ctx) {
       if (av_hwframe_transfer_data(sw_frame, ctx->frame_video, 0) < 0) {
         av_frame_free(&sw_frame);
         av_frame_unref(ctx->frame_video);
+        if (++ctx->hw_transfer_failures >= 10) {
+          player_fallback_to_sw(ctx);
+          return;
+        }
         continue;
       }
+
+      ctx->hw_transfer_failures = 0;
       render_frame = sw_frame;
     }
 
@@ -320,9 +361,7 @@ void player_receive_video_frames(PlayerContext *ctx) {
       av_frame_free(&sw_frame);
     }
 
-    if (++ctx->frame_counter % 300 == 0) {
-      trim_memory();
-    }
+    ctx->frame_counter++;
   }
 }
 

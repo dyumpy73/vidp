@@ -55,6 +55,7 @@ typedef struct {
   double cb_pts;
   double cb_wall;
   int cb_valid;
+  double cb_chunk_dur;
 } AudioBuffer;
 
 typedef struct {
@@ -112,6 +113,7 @@ typedef struct {
   AVBufferRef *hw_device_ctx;
   int is_hw_accel;
   enum AVPixelFormat hw_pix_fmt;
+  int hw_transfer_failures;
   int frame_counter;
   int subtitle_visible;
   uint32_t current_tex_format;

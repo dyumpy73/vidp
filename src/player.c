@@ -1,7 +1,11 @@
 #include "player.h"
 
+static float g_master_volume = 1.0f;
+
 void player_do_seek(PlayerContext *ctx, double target_sec) {
   if (target_sec < 0.0) target_sec = 0.0;
+
+  if (ctx->audio_dev > 0 ) SDL_PauseAudioDevice(ctx->audio_dev, 1);
 
   if (ctx->fmt_ctx->duration != AV_NOPTS_VALUE && ctx->fmt_ctx->duration > 0) {
     double dur = (double)ctx->fmt_ctx->duration / AV_TIME_BASE;
@@ -51,6 +55,10 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
   ctx->consecutive_drops   = 0;
   ctx->sub_has_pixels      = 0;
 
+  if (ctx->audio_dev > 0) {
+    SDL_PauseAudioDevice(ctx->audio_dev, ctx->paused ? 1 : 0);
+  }
+
   if (ctx->paused) ctx->step_pending = 1;
 }
 
@@ -61,7 +69,7 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index, int to
   ctx->nav_action = NAV_NEXT;
   ctx->audio_buf.lock = SDL_CreateMutex();
   if (!ctx->audio_buf.lock) return 0;
-  ctx->audio_buf.volume = 1.0f;
+  ctx->audio_buf.volume = g_master_volume;
 
   ctx->discard_until = -1.0;
   ctx->audio_discard_until = -1.0;
@@ -302,6 +310,7 @@ void player_sleep_pumping(PlayerContext *ctx, double seconds) {
   double target = get_monotonic_time() + seconds;
   while (get_monotonic_time() < target) {
     if (ctx->file_finished || ctx->seek_requested) return;
+    if (ctx->paused && !ctx->step_pending) return;
     if (ctx->global_quit_ref && *ctx->global_quit_ref) return;
     if (ctx->global_quit_ref && ctx->playlist_index_ref) {
       player_handle_events(ctx, ctx->global_quit_ref, ctx->playlist_index_ref);
@@ -426,11 +435,13 @@ void player_handle_events(PlayerContext *ctx, int *global_quit, int *playlist_in
         case SDLK_UP:
           SDL_LockMutex(ctx->audio_buf.lock);
           ctx->audio_buf.volume = (ctx->audio_buf.volume + 0.1f > 1.0f) ? 1.0f : ctx->audio_buf.volume + 0.1f;
+          g_master_volume = ctx->audio_buf.volume;
           SDL_UnlockMutex(ctx->audio_buf.lock);
           break;
         case SDLK_DOWN:
           SDL_LockMutex(ctx->audio_buf.lock);
           ctx->audio_buf.volume = (ctx->audio_buf.volume - 0.1f < 0.0f) ? 0.0f : ctx->audio_buf.volume - 0.1f;
+          g_master_volume = ctx->audio_buf.volume;
           SDL_UnlockMutex(ctx->audio_buf.lock);
           break;
         case SDLK_RIGHT:
@@ -473,6 +484,9 @@ void player_handle_events(PlayerContext *ctx, int *global_quit, int *playlist_in
 void player_run_loop(PlayerContext *ctx, int *global_quit, int *playlist_index) {
   ctx->global_quit_ref = global_quit;
   ctx->playlist_index_ref = playlist_index;
+
+  SDL_FlushEvent(SDL_KEYDOWN);
+  SDL_FlushEvent(SDL_KEYUP);
 
   while (!ctx->file_finished && !*global_quit) {
     player_handle_events(ctx, global_quit, playlist_index);

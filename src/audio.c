@@ -23,6 +23,7 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
     if (audio_buf->has_pts && audio_buf->bytes_per_sec > 0) {
       audio_buf->cb_pts   = audio_buf->end_pts - (double)audio_buf->size / audio_buf->bytes_per_sec;
       audio_buf->cb_wall  = get_monotonic_time();
+      audio_buf->cb_chunk_dur = (double)bytes_to_copy / audio_buf->bytes_per_sec;
       audio_buf->cb_valid = 1;
     } else {
       audio_buf->cb_valid = 0;
@@ -42,6 +43,7 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
 
   SDL_UnlockMutex(audio_buf->lock);
 }
+
 static void push_audio_data(AudioBuffer *audio_buf, const uint8_t *data, size_t len, int frame_size, double start_pts) {
   if (frame_size <= 0) frame_size = 4;
   len = (len / frame_size) * frame_size;
@@ -104,11 +106,10 @@ double player_get_audio_clock(PlayerContext *ctx) {
   double result = -1.0;
   SDL_LockMutex(ctx->audio_buf.lock);
   if (ctx->audio_buf.cb_valid && ctx->audio_spec.freq > 0) {
-    double period  = (double)ctx->audio_spec.samples / ctx->audio_spec.freq;
-    double elapsed = get_monotonic_time() - ctx->audio_buf.cb_wall;
-    if (elapsed > period) elapsed = period;   /* pause/underrun: berhenti maju */
-    result = ctx->audio_buf.cb_pts - period + elapsed;
-    if (result < 0.0) result = 0.0;
+    double chunk_dur = ctx->audio_buf.cb_chunk_dur;
+    double elapsed   = get_monotonic_time() - ctx->audio_buf.cb_wall;
+    if (elapsed > chunk_dur) elapsed = chunk_dur;
+    result = ctx->audio_buf.cb_pts - chunk_dur + elapsed;    if (result < 0.0) result = 0.0;
   }
   SDL_UnlockMutex(ctx->audio_buf.lock);
   return result;
@@ -141,7 +142,7 @@ int player_init_audio(PlayerContext *ctx) {
   wanted_spec.callback = sdl_audio_callback;
   wanted_spec.userdata = &ctx->audio_buf;
 
-  ctx->audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted_spec, &ctx->audio_spec, 0);
+  ctx->audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted_spec, &ctx->audio_spec, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
   if (ctx->audio_dev == 0) goto fail;
 
   ctx->output_channels = ctx->audio_spec.channels;
