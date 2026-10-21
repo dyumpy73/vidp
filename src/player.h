@@ -151,6 +151,10 @@ SDL_Cursor* create_blank_cursor(void);
 /* ---- playlist.c ---- */
 void build_playlist(int argc, char *argv[], char ***playlist, int *count);
 void free_playlist(char **playlist, int count);
+void playlist_collect_path(const char *path, char ***out, int *count);
+
+/* ---- idle.c ---- */
+int player_idle_run(char ***out_playlist, int *out_count);
 
 /* ---- video.c ---- */
 enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts);

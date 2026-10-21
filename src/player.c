@@ -131,7 +131,7 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index, int to
   if (!ctx->v_codec_ctx) return 0;
   if (avcodec_parameters_to_context(ctx->v_codec_ctx, v_par) < 0) return 0;
 
-  ctx->v_codec_ctx->thread_count = 0;  /* auto */
+  ctx->v_codec_ctx->thread_count = 0;
   ctx->v_codec_ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
   ctx->v_codec_ctx->opaque = ctx;
   ctx->hw_pix_fmt = AV_PIX_FMT_NONE;

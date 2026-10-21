@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS ?= -O2 -Wall -Wextra
 
-PKGS = libavformat libavcodec libavutil libswscale libswresample libass sdl2
+PKGS = libavformat libavcodec libavutil libswscale libswresample libass sdl2 SDL2_ttf
 CFLAGS_PKG = $(shell pkg-config --cflags $(PKGS))
 LIBS = $(shell pkg-config --libs $(PKGS)) -lm
 
@@ -12,7 +12,8 @@ SRC = src/main.c \
       src/audio.c \
       src/subtitle.c \
       src/playlist.c \
-      src/utils.c
+      src/utils.c \
+			src/idle.c
 OBJ = $(SRC:.c=.o)
 
 all: $(TARGET)

@@ -82,3 +82,14 @@ void free_playlist(char **playlist, int count) {
   }
   free(playlist);
 }
+
+void playlist_collect_path(const char *path, char ***out, int *count) {
+  struct stat st;
+  if (stat(path, &st) != 0) return;
+
+  if (S_ISDIR(st.st_mode)) {
+    scan_directory(path, out, count);
+  } else if (S_ISREG(st.st_mode) && is_media_file(path)) {
+    add_to_playlist(out, count, path);
+  }
+}

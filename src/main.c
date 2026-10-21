@@ -6,30 +6,31 @@ int main(int argc, char *argv[]) {
   mallopt(M_MMAP_THRESHOLD, 128 * 1024);
 #endif
 
-  if (argc < 2) {
-    printf("Usage: %s <file_or_directory> [file2 file3 ...]\n", argv[0]);
-    return -1;
-  }
-
   av_log_set_level(AV_LOG_ERROR);
 
   char **playlist = NULL;
   int playlist_count = 0;
   build_playlist(argc, argv, &playlist, &playlist_count);
 
-  if (playlist_count == 0) {
-    fprintf(stderr, "[VidP] No valid media files found to play.\n");
-    return -1;
-  }
-
-  printf("[VidP] Playlist loaded with %d file(s).\n", playlist_count);
   SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "2");
 
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER)) {
+  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER | SDL_INIT_EVENTS)) {
     fprintf(stderr, "[VidP] Failed to initialize SDL: %s\n", SDL_GetError());
     free_playlist(playlist, playlist_count);
     return -1;
   }
+
+  if (playlist_count == 0) {
+    printf("[VidP] No files given, showing idle screen.\n");
+    if (!player_idle_run(&playlist, &playlist_count) || playlist_count == 0) {
+        printf("[VidP] No file selected, exiting.\n");
+        SDL_Quit();
+        return 0;
+    }
+    printf("[VidP] Idle screen selected %d file(s).\n", playlist_count);
+  }
+
+  printf("[VidP] Playlist loaded with %d file(s).\n", playlist_count);
 
   int playlist_index = 0;
   int global_quit = 0;
