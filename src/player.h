@@ -52,6 +52,9 @@ typedef struct {
   double end_pts;
   int has_pts;
   int bytes_per_sec;
+  double cb_pts;
+  double cb_wall;
+  int cb_valid;
 } AudioBuffer;
 
 typedef struct {

@@ -20,6 +20,14 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
     }
     audio_buf->size -= bytes_to_copy;
 
+    if (audio_buf->has_pts && audio_buf->bytes_per_sec > 0) {
+      audio_buf->cb_pts   = audio_buf->end_pts - (double)audio_buf->size / audio_buf->bytes_per_sec;
+      audio_buf->cb_wall  = get_monotonic_time();
+      audio_buf->cb_valid = 1;
+    } else {
+      audio_buf->cb_valid = 0;
+    }
+
     float vol = audio_buf->volume;
     if (vol < 0.999f) {
       Sint16 *s = (Sint16 *)stream;
@@ -28,11 +36,12 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
         s[i] = (Sint16)(s[i] * vol);
       }
     }
+  } else {
+    audio_buf->cb_valid = 0;
   }
 
   SDL_UnlockMutex(audio_buf->lock);
 }
-
 static void push_audio_data(AudioBuffer *audio_buf, const uint8_t *data, size_t len, int frame_size, double start_pts) {
   if (frame_size <= 0) frame_size = 4;
   len = (len / frame_size) * frame_size;
@@ -85,23 +94,24 @@ void player_reset_audio_buffer(AudioBuffer *audio_buf) {
   audio_buf->size = 0;
   audio_buf->has_pts = 0;
   audio_buf->end_pts = 0.0;
+  audio_buf->cb_valid = 0;
   SDL_UnlockMutex(audio_buf->lock);
 }
 
 double player_get_audio_clock(PlayerContext *ctx) {
   if (ctx->audio_dev == 0 || !ctx->audio_buf.lock) return -1.0;
 
-  double clock = -1.0;
+  double result = -1.0;
   SDL_LockMutex(ctx->audio_buf.lock);
-  if (ctx->audio_buf.has_pts && ctx->audio_buf.size > 0 &&
-      ctx->audio_buf.bytes_per_sec > 0) {
-    double buffered = (double)ctx->audio_buf.size / ctx->audio_buf.bytes_per_sec;
-    double device_latency = (double)ctx->audio_spec.size / ctx->audio_buf.bytes_per_sec;
-    clock = ctx->audio_buf.end_pts - buffered - device_latency;
-    if (clock < 0.0) clock = 0.0;
+  if (ctx->audio_buf.cb_valid && ctx->audio_spec.freq > 0) {
+    double period  = (double)ctx->audio_spec.samples / ctx->audio_spec.freq;
+    double elapsed = get_monotonic_time() - ctx->audio_buf.cb_wall;
+    if (elapsed > period) elapsed = period;   /* pause/underrun: berhenti maju */
+    result = ctx->audio_buf.cb_pts - period + elapsed;
+    if (result < 0.0) result = 0.0;
   }
   SDL_UnlockMutex(ctx->audio_buf.lock);
-  return clock;
+  return result;
 }
 
 int player_init_audio(PlayerContext *ctx) {
