@@ -25,7 +25,7 @@ int player_init_display(PlayerContext *ctx, const char *title) {
     double t = disp_w; disp_w = disp_h; disp_h = t;
   }
   SDL_Rect usable;
-  if (SDL_GetDisplayUsableBounds(SDL_GetPrimaryDisplay(), &usable) == 0 && usable.w > 0 && usable.h > 0) {
+  if (SDL_GetDisplayUsableBounds(SDL_GetPrimaryDisplay(), &usable) && usable.w > 0 && usable.h > 0) {
     double sx = (usable.w * 0.9) / disp_w;
     double sy = (usable.h * 0.9) / disp_h;
     double scale = sx < sy ? sx : sy;
@@ -151,7 +151,8 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
     if (v_stride < 0) { v_ptr += v_stride * (ctx->height / 2 - 1); v_stride = -v_stride; }
 
     SDL_UpdateYUVTexture(ctx->texture, NULL, y_ptr, y_stride, u_ptr, u_stride, v_ptr, v_stride);
-  }  player_present_frame(ctx);
+  }  
+  player_present_frame(ctx);
 }
 
 static void player_fallback_to_sw(PlayerContext *ctx) {

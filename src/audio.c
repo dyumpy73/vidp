@@ -65,7 +65,6 @@ int player_init_audio(PlayerContext *ctx) {
 
   ctx->output_channels = wanted_spec.channels;
   ctx->bytes_per_sec = wanted_spec.freq * ctx->output_channels * (int)sizeof(int16_t);
-  ctx->volume = 1.0f;
 
   AVChannelLayout out_ch_layout;
   av_channel_layout_default(&out_ch_layout, ctx->output_channels);
