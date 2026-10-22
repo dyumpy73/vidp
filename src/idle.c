@@ -93,7 +93,6 @@ typedef struct {
   int   is_dir;
   int   selected;
   int   permanent;
-  int   temp_selected;
 } PickEntry;
 
 typedef struct {
@@ -105,7 +104,7 @@ typedef struct {
   char       cwd[PATH_MAX];
   int        space_held;
   int        anchor;
-  Uint32     ghost_until;
+  int        op_select;
 } Picker;
 
 static int cmp_entry(const void *a, const void *b) {
@@ -124,29 +123,11 @@ static void picker_free(Picker *p) {
   p->count = p->cap = 0;
 }
 
-static void picker_clear_ghosts(Picker *p) {
-  for (int i = 0; i < p->count; i++) {
-    if (!p->entries[i].permanent) {
-      p->entries[i].temp_selected = 0;
-      p->entries[i].selected = 0;
-    }
-  }
-  p->ghost_until = 0;
-}
-
 static void picker_apply_range(Picker *p) {
-  if (!p->space_held) {
-    for (int i = 0; i < p->count; i++) {
-      p->entries[i].selected = p->entries[i].permanent;
-    }
-    return;
-  }
-
   for (int i = 0; i < p->count; i++) {
     p->entries[i].selected = p->entries[i].permanent;
-    p->entries[i].temp_selected = 0;
   }
-  if (p->anchor < 0 || p->count == 0) return;
+  if (!p->space_held || p->anchor < 0 || p->count == 0) return;
 
   int lo = p->anchor < p->cursor ? p->anchor : p->cursor;
   int hi = p->anchor > p->cursor ? p->anchor : p->cursor;
@@ -154,20 +135,18 @@ static void picker_apply_range(Picker *p) {
   if (hi >= p->count) hi = p->count - 1;
 
   for (int i = lo; i <= hi; i++) {
-    if (!p->entries[i].is_dir && !p->entries[i].permanent) {
-      p->entries[i].selected = 1;
-      p->entries[i].temp_selected = 1;
+    if (!p->entries[i].is_dir) {
+      p->entries[i].selected = p->op_select;
     }
   }
 }
 
-static void picker_rollback(Picker *p) {
+static void picker_commit(Picker *p) {
   for (int i = 0; i < p->count; i++) {
-    p->entries[i].selected = p->entries[i].permanent;
+    p->entries[i].permanent = p->entries[i].selected;
   }
   p->space_held = 0;
   p->anchor = -1;
-  p->ghost_until = SDL_GetTicks() + 600;
 }
 
 static int picker_load(Picker *p, const char *dir) {
@@ -175,7 +154,6 @@ static int picker_load(Picker *p, const char *dir) {
   snprintf(p->cwd, sizeof(p->cwd), "%s", dir);
   p->anchor = -1;
   p->space_held = 0;
-  p->ghost_until = 0;
 
   DIR *d = opendir(dir);
   if (!d) {
@@ -206,7 +184,6 @@ static int picker_load(Picker *p, const char *dir) {
     p->entries[p->count].is_dir = is_dir;
     p->entries[p->count].selected = 0;
     p->entries[p->count].permanent = 0;
-    p->entries[p->count].temp_selected = 0;
     p->count++;
   }
   closedir(d);
@@ -221,7 +198,6 @@ static void picker_draw(SDL_Renderer *ren, Picker *p, int ww, int wh) {
   SDL_Color white = { 230, 230, 235, 255 };
   SDL_Color dim   = { 110, 110, 120, 255 };
   SDL_Color cyan  = { 0x38, 0xBD, 0xF8, 255 };
-  SDL_Color orange= { 0xFF, 0x5C, 0x38, 255 };
 
   SDL_SetRenderDrawColor(ren, 0x10, 0x10, 0x12, 0xFF);
   SDL_RenderClear(ren);
@@ -260,14 +236,8 @@ static void picker_draw(SDL_Renderer *ren, Picker *p, int ww, int wh) {
     } else {
       const char *mark = "  ";
       SDL_Color col = dim;
-      if (e->permanent) {
+      if (e->selected) {
         mark = "* "; col = white;
-      } else if (e->temp_selected) {
-        if (p->space_held) {
-          mark = "* "; col = white;
-        } else {
-          mark = "~ "; col = orange;
-        }
       }
       snprintf(line, sizeof(line), "%s%s", mark, e->name);
       render_text_left(ren, line, col, 32, y);
@@ -284,19 +254,19 @@ static void picker_draw(SDL_Renderer *ren, Picker *p, int ww, int wh) {
     SDL_RenderFillRect(ren, &bar);
   }
 
-  int nperm = 0, ntemp = 0;
+  int nsel = 0;
   for (int i = 0; i < p->count; i++) {
-    if (p->entries[i].permanent) nperm++;
-    if (p->entries[i].temp_selected) ntemp++;
+    if (p->entries[i].selected) nsel++;
   }
 
   char footer[256];
   if (p->space_held) {
     snprintf(footer, sizeof(footer),
-             "extending +%d  ·  arrows resize  ·  enter commit  ·  release rollback", ntemp);
-  } else if (nperm > 0) {
+             "%s range  ·  arrows resize  ·  release to commit",
+             p->op_select ? "selecting" : "unselecting");
+  } else if (nsel > 0) {
     snprintf(footer, sizeof(footer),
-             "%d selected  ·  enter play  ·  space extend  ·  ctrl+enter scan  ·  esc cancel", nperm);
+             "%d selected  ·  enter play  ·  space select/unselect  ·  ctrl+enter scan  ·  esc cancel", nsel);
   } else {
     snprintf(footer, sizeof(footer),
              "enter open  ·  space select+extend  ·  ctrl+enter scan folder  ·  esc cancel");
@@ -322,11 +292,7 @@ static int picker_run(SDL_Window *win, SDL_Renderer *ren,
   while (!done) {
     const Uint8 *kbd = SDL_GetKeyboardState(NULL);
     if (!kbd[SDL_SCANCODE_SPACE] && p.space_held) {
-      picker_rollback(&p);
-    }
-
-    if (p.ghost_until && SDL_GetTicks() > p.ghost_until) {
-      picker_clear_ghosts(&p);
+      picker_commit(&p);
     }
 
     SDL_Event e;
@@ -335,8 +301,9 @@ static int picker_run(SDL_Window *win, SDL_Renderer *ren,
         done = 1;
       }
       else if (e.type == SDL_KEYUP) {
-        if (e.key.keysym.sym == SDLK_SPACE && p.space_held) {
-          picker_rollback(&p);
+        if ((e.key.keysym.sym == SDLK_SPACE ||
+             e.key.keysym.scancode == SDL_SCANCODE_SPACE) && p.space_held) {
+          picker_commit(&p);
         }
       }
       else if (e.type == SDL_KEYDOWN) {
@@ -372,7 +339,7 @@ static int picker_run(SDL_Window *win, SDL_Renderer *ren,
           picker_apply_range(&p);
         }
         else if (k == SDLK_BACKSPACE) {
-          picker_clear_ghosts(&p);
+          picker_commit(&p);
           char parent[PATH_MAX];
           snprintf(parent, sizeof(parent), "%s", p.cwd);
           char *slash = strrchr(parent, '/');
@@ -384,7 +351,7 @@ static int picker_run(SDL_Window *win, SDL_Renderer *ren,
           }
         }
         else if (k == SDLK_a && (e.key.keysym.mod & KMOD_CTRL)) {
-          picker_clear_ghosts(&p);
+          picker_commit(&p);
           int all_perm = 1;
           for (int i = 0; i < p.count; i++) {
             if (!p.entries[i].is_dir && !p.entries[i].permanent) {
@@ -395,7 +362,6 @@ static int picker_run(SDL_Window *win, SDL_Renderer *ren,
             if (!p.entries[i].is_dir) {
               p.entries[i].permanent = !all_perm;
               p.entries[i].selected = !all_perm;
-              p.entries[i].temp_selected = 0;
             }
           }
           p.space_held = 0;
@@ -404,28 +370,14 @@ static int picker_run(SDL_Window *win, SDL_Renderer *ren,
         else if (k == SDLK_SPACE) {
           if (e.key.repeat) continue;
           if (p.count > 0 && !p.entries[p.cursor].is_dir) {
-            if (!p.space_held) picker_clear_ghosts(&p);
-
-            if (p.entries[p.cursor].permanent) {
-              p.entries[p.cursor].permanent = 0;
-              p.entries[p.cursor].selected = 0;
-              p.entries[p.cursor].temp_selected = 0;
-              p.space_held = 0;
-              p.anchor = -1;
-            } else {
-              p.entries[p.cursor].permanent = 1;
-              p.entries[p.cursor].selected = 1;
-              p.entries[p.cursor].temp_selected = 0;
-              p.anchor = p.cursor;
-              p.space_held = 1;
-              picker_apply_range(&p);
-            }
+            p.op_select = !p.entries[p.cursor].selected;
+            p.anchor = p.cursor;
+            p.space_held = 1;
+            picker_apply_range(&p);
           }
         }
         else if (k == SDLK_RETURN && (e.key.keysym.mod & KMOD_CTRL)) {
-          picker_clear_ghosts(&p);
-          p.space_held = 0;
-          p.anchor = -1;
+          picker_commit(&p);
           char target[PATH_MAX];
           if (p.count > 0 && p.entries[p.cursor].is_dir) {
             snprintf(target, sizeof(target), "%s", p.entries[p.cursor].path);
@@ -442,7 +394,7 @@ static int picker_run(SDL_Window *win, SDL_Renderer *ren,
           if (p.count == 0) continue;
           PickEntry *cur = &p.entries[p.cursor];
           if (cur->is_dir) {
-            picker_clear_ghosts(&p);
+            picker_commit(&p);
             char newpath[PATH_MAX];
             snprintf(newpath, sizeof(newpath), "%s", cur->path);
             picker_load(&p, newpath);

@@ -9,7 +9,7 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
 
   if (ctx->fmt_ctx->duration != AV_NOPTS_VALUE && ctx->fmt_ctx->duration > 0) {
     double dur = (double)ctx->fmt_ctx->duration / AV_TIME_BASE;
-    double max_target = dur - 1.0;
+    double max_target = dur - 0.5;
     if (max_target < 0.0) max_target = 0.0;
     if (target_sec > max_target) target_sec = max_target;
   }
@@ -449,6 +449,14 @@ void player_handle_events(PlayerContext *ctx, int *global_quit, int *playlist_in
           double base = ctx->seek_requested ? ctx->seek_target : ctx->last_video_time;
           double step = (event.key.keysym.sym == SDLK_RIGHT) ? SEEK_STEP_SEC : -SEEK_STEP_SEC;
           ctx->seek_target = base + step;
+          if (ctx->seek_target < 0.0) ctx->seek_target = 0.0;
+          if (ctx->fmt_ctx && ctx->fmt_ctx->duration != AV_NOPTS_VALUE && ctx->fmt_ctx->duration > 0) {
+            double dur = (double)ctx->fmt_ctx->duration / AV_TIME_BASE;
+            if (ctx->seek_target >= dur - 0.5) {
+              ctx->file_finished = 1;
+              break;
+            }
+          }
           ctx->seek_requested = 1;
           break;
         }
