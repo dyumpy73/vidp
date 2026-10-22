@@ -1,9 +1,9 @@
 CC = gcc
 CFLAGS ?= -O2 -Wall -Wextra
 
-PKGS = libavformat libavcodec libavutil libswscale libswresample libass sdl2 SDL2_ttf
+PKGS = libavformat libavcodec libavutil libswscale libswresample libass sdl3 sdl3-ttf
 CFLAGS_PKG = $(shell pkg-config --cflags $(PKGS))
-LIBS = $(shell pkg-config --libs $(PKGS)) -lm
+LIBS = $(shell pkg-config --libs $(PKGS)) -lm -lpthread
 
 TARGET = vidp
 SRC = src/main.c \

@@ -22,10 +22,10 @@
 #include <libavutil/display.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
-#include <SDL2/SDL.h>
+#include <SDL3/SDL.h>
+#include <SDL3_ttf/SDL_ttf.h>
 #include <ass/ass.h>
 
-#define AUDIO_BUFFER_SIZE       (256 * 1024)
 #define SEEK_STEP_SEC           10.0
 #define AV_SYNC_THRESHOLD_MAX   0.100
 #define AV_SYNC_THRESHOLD_MIN  -0.100
@@ -34,29 +34,12 @@
 #define SUBTITLE_RENDER_SCALE   1
 #define MAX_SUBTITLE_STREAM     32
 #define SUBTITLE_PREROLL_SEC    1.5
+#define AV_SYNC_DROP_AUDIO     -0.050
 
 typedef enum {
   NAV_NEXT = 0,
   NAV_PREV
 } NavAction;
-
-#define AV_SYNC_DROP_AUDIO     -0.050
-
-typedef struct {
-  uint8_t buffer[AUDIO_BUFFER_SIZE];
-  size_t write_pos;
-  size_t read_pos;
-  size_t size;
-  SDL_mutex *lock;
-  float volume;
-  double end_pts;
-  int has_pts;
-  int bytes_per_sec;
-  double cb_pts;
-  double cb_wall;
-  int cb_valid;
-  double cb_chunk_dur;
-} AudioBuffer;
 
 typedef struct {
   AVFormatContext *fmt_ctx;
@@ -79,12 +62,14 @@ typedef struct {
   AVFrame *frame_yuv;
   AVPacket *packet;
 
-  AudioBuffer audio_buf;
+  SDL_AudioStream *sdl_stream;
   SDL_AudioDeviceID audio_dev;
   SDL_AudioSpec audio_spec;
   uint8_t *audio_out_buffer;
   unsigned int audio_out_buffer_size;
   int output_channels;
+  int bytes_per_sec;
+  float volume;
 
   ASS_Library *ass_library;
   ASS_Renderer *ass_renderer;
@@ -104,6 +89,7 @@ typedef struct {
   int file_finished;
   int paused;
   double last_video_time;
+  double last_audio_pts;
   double discard_until;
   double audio_discard_until;
   double playback_start_wall;
@@ -123,7 +109,7 @@ typedef struct {
   SDL_Cursor *blank_cursor;
 
   int has_last_frame;
-  SDL_Rect last_dest_rect;
+  SDL_FRect last_dest_rect;
 
   int *global_quit_ref;
   int *playlist_index_ref;
@@ -168,7 +154,7 @@ void player_process_video_packet(PlayerContext *ctx);
 int player_init_audio(PlayerContext *ctx);
 void player_receive_audio_frames(PlayerContext *ctx);
 void player_process_audio_packet(PlayerContext *ctx);
-void player_reset_audio_buffer(AudioBuffer *audio_buf);
+void player_reset_audio_buffer(PlayerContext *ctx);
 double player_get_audio_clock(PlayerContext *ctx);
 
 /* ---- subtitle.c ---- */
@@ -176,7 +162,7 @@ void player_init_subtitles(PlayerContext *ctx);
 void player_process_subtitle_packet(PlayerContext *ctx);
 void player_reset_subtitle_state(PlayerContext *ctx);
 void player_switch_subtitle(PlayerContext *ctx);
-void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect, int changed);
+void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_FRect *dest_rect, int changed);
 void player_update_ass_storage(PlayerContext *ctx);
 
 /* ---- player.c ---- */

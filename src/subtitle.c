@@ -32,7 +32,7 @@ void player_update_ass_storage(PlayerContext *ctx) {
   ass_set_storage_size(ctx->ass_renderer, w, h);
 }
 
-void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect, int changed) {
+void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_FRect *dest_rect, int changed) {
   if (!img || dest_rect->w <= 0 || dest_rect->h <= 0) return;
 
   int target_w = dest_rect->w / SUBTITLE_RENDER_SCALE;
@@ -43,8 +43,8 @@ void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect,
   int rebuild = changed;
 
   if (!ctx->sub_surf || ctx->sub_surf->w != target_w || ctx->sub_surf->h != target_h) {
-    if (ctx->sub_surf) SDL_FreeSurface(ctx->sub_surf);
-    ctx->sub_surf = SDL_CreateRGBSurfaceWithFormat(0, target_w, target_h, 32, SDL_PIXELFORMAT_RGBA32);
+    if (ctx->sub_surf) SDL_DestroySurface(ctx->sub_surf);
+    ctx->sub_surf = SDL_CreateSurface(target_w, target_h, SDL_PIXELFORMAT_RGBA32);
     if (!ctx->sub_surf) return;
 
     if (ctx->sub_tex) {
@@ -58,16 +58,16 @@ void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect,
                                      SDL_TEXTUREACCESS_STREAMING, target_w, target_h);
     if (!ctx->sub_tex) return;
     SDL_SetTextureBlendMode(ctx->sub_tex, SDL_BLENDMODE_BLEND);
-    SDL_SetTextureScaleMode(ctx->sub_tex, SDL_ScaleModeLinear);
+    SDL_SetTextureScaleMode(ctx->sub_tex, SDL_SCALEMODE_LINEAR);
     rebuild = 1;
   }
 
   if (!rebuild) {
-    if (ctx->sub_has_pixels) SDL_RenderCopy(ctx->renderer, ctx->sub_tex, NULL, dest_rect);
+    if (ctx->sub_has_pixels) SDL_RenderTexture(ctx->renderer, ctx->sub_tex, NULL, dest_rect);
     return;
   }
 
-  SDL_FillRect(ctx->sub_surf, NULL, 0);
+  SDL_FillSurfaceRect(ctx->sub_surf, NULL, 0);
 
   uint32_t *pixels = (uint32_t *)ctx->sub_surf->pixels;
   int surf_w = ctx->sub_surf->w;
@@ -122,7 +122,7 @@ void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_Rect *dest_rect,
   ctx->sub_has_pixels = has_pixels;
   SDL_UpdateTexture(ctx->sub_tex, NULL, ctx->sub_surf->pixels, ctx->sub_surf->pitch);
   if (has_pixels) {
-    SDL_RenderCopy(ctx->renderer, ctx->sub_tex, NULL, dest_rect);
+    SDL_RenderTexture(ctx->renderer, ctx->sub_tex, NULL, dest_rect);
   }
 }
 
@@ -233,7 +233,7 @@ void player_process_subtitle_packet(PlayerContext *ctx) {
 
 void player_reset_subtitle_state(PlayerContext *ctx) {
   if (ctx->sub_surf) {
-    SDL_FreeSurface(ctx->sub_surf);
+    SDL_DestroySurface(ctx->sub_surf);
     ctx->sub_surf = NULL;
   }
   if (ctx->sub_tex) {

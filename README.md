@@ -1,6 +1,6 @@
-# VidP
+# VidP (Video Player)
 
-A small video player written in C, built on **FFmpeg**, **SDL2**, and **libass**. Application logic runs in a single thread, while FFmpeg and SDL handle their own internal threads.
+A small video player written in C, built on **FFmpeg**, **SDL3**, and **libass**. Application logic runs in a single thread, while FFmpeg and SDL handle their own internal threads.
 
 ---
 
@@ -39,13 +39,13 @@ Ensure you have the required libraries and header files installed on your system
 
 ### Arch Linux
 ```bash
-sudo pacman -S gcc pkg-config ffmpeg sdl2 sdl2_ttf libass
+sudo pacman -S gcc pkg-config ffmpeg sdl3 sdl3-ttf libass
 ```
 
 ### Debian / Ubuntu
 ```bash
 sudo apt update
-sudo apt install gcc pkg-config libavcodec-dev libavformat-dev libswscale-dev libswresample-dev libsdl2-dev libsdl2-ttf libass-dev
+sudo apt install gcc pkg-config libavcodec-dev libavformat-dev libswscale-dev libswresample-dev libsdl3-dev libsdl3-ttf libass-dev
 ```
 
 ---
@@ -77,11 +77,9 @@ sudo make uninstall
 Alternatively, to compile manually without Make:
 
 ```bash
-gcc -O2 -Wall -o vidp \
-    src/main.c src/player.c src/video.c src/audio.c \
-    src/subtitle.c src/playlist.c src/utils.c \
+gcc -O2 -Wall -Wextra src/*.c -o vidp \
     $(pkg-config --cflags --libs libavformat libavcodec libavutil \
-      libswscale libswresample sdl2 libass) -lm
+      libswscale libswresample sdl3 sdl3-ttf libass) -lm lpthread
 ```
 
 ---

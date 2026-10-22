@@ -1,118 +1,31 @@
 #include "player.h"
 
-static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
-  AudioBuffer *audio_buf = (AudioBuffer *)userdata;
-  SDL_memset(stream, 0, len);
-  SDL_LockMutex(audio_buf->lock);
-
-  if (audio_buf->size > 0) {
-    size_t bytes_to_copy = (size_t)len < audio_buf->size ? (size_t)len : audio_buf->size;
-
-    if (audio_buf->read_pos + bytes_to_copy <= AUDIO_BUFFER_SIZE) {
-      memcpy(stream, audio_buf->buffer + audio_buf->read_pos, bytes_to_copy);
-      audio_buf->read_pos = (audio_buf->read_pos + bytes_to_copy) % AUDIO_BUFFER_SIZE;
-    } else {
-      size_t first_part = AUDIO_BUFFER_SIZE - audio_buf->read_pos;
-      size_t second_part = bytes_to_copy - first_part;
-      memcpy(stream, audio_buf->buffer + audio_buf->read_pos, first_part);
-      memcpy(stream + first_part, audio_buf->buffer, second_part);
-      audio_buf->read_pos = second_part;
-    }
-    audio_buf->size -= bytes_to_copy;
-
-    if (audio_buf->has_pts && audio_buf->bytes_per_sec > 0) {
-      audio_buf->cb_pts   = audio_buf->end_pts - (double)audio_buf->size / audio_buf->bytes_per_sec;
-      audio_buf->cb_wall  = get_monotonic_time();
-      audio_buf->cb_chunk_dur = (double)bytes_to_copy / audio_buf->bytes_per_sec;
-      audio_buf->cb_valid = 1;
-    } else {
-      audio_buf->cb_valid = 0;
-    }
-
-    float vol = audio_buf->volume;
-    if (vol < 0.999f) {
-      Sint16 *s = (Sint16 *)stream;
-      int n = (int)(bytes_to_copy / sizeof(Sint16));
-      for (int i = 0; i < n; i++) {
-        s[i] = (Sint16)(s[i] * vol);
-      }
-    }
-  } else {
-    audio_buf->cb_valid = 0;
-  }
-
-  SDL_UnlockMutex(audio_buf->lock);
-}
-
-static void push_audio_data(AudioBuffer *audio_buf, const uint8_t *data, size_t len, int frame_size, double start_pts) {
+static void push_audio_data(PlayerContext *ctx, const uint8_t *data, size_t len, int frame_size, double start_pts) {
+  (void)start_pts;
   if (frame_size <= 0) frame_size = 4;
   len = (len / frame_size) * frame_size;
   if (len == 0) return;
 
-  if (len >= AUDIO_BUFFER_SIZE) {
-    size_t max_bytes = (AUDIO_BUFFER_SIZE / frame_size) * frame_size;
-    data += (len - max_bytes);
-    len = max_bytes;
+  if (len > 0) {
+    SDL_PutAudioStreamData(ctx->sdl_stream, data, (int)len);    
   }
-
-  SDL_LockMutex(audio_buf->lock);
-
-  if (audio_buf->size + len > AUDIO_BUFFER_SIZE) {
-    size_t to_drop = audio_buf->size + len - AUDIO_BUFFER_SIZE;
-    to_drop = ((to_drop + frame_size - 1) / frame_size) * frame_size;
-    if (to_drop > audio_buf->size) to_drop = audio_buf->size;
-    audio_buf->read_pos = (audio_buf->read_pos + to_drop) % AUDIO_BUFFER_SIZE;
-    audio_buf->size -= to_drop;
-  }
-
-  if (audio_buf->write_pos + len <= AUDIO_BUFFER_SIZE) {
-    memcpy(audio_buf->buffer + audio_buf->write_pos, data, len);
-    audio_buf->write_pos = (audio_buf->write_pos + len) % AUDIO_BUFFER_SIZE;
-  } else {
-    size_t first_part = AUDIO_BUFFER_SIZE - audio_buf->write_pos;
-    size_t second_part = len - first_part;
-    memcpy(audio_buf->buffer + audio_buf->write_pos, data, first_part);
-    memcpy(audio_buf->buffer, data + first_part, second_part);
-    audio_buf->write_pos = second_part;
-  }
-  audio_buf->size += len;
-
-  if (audio_buf->bytes_per_sec > 0) {
-    if (start_pts >= 0.0) {
-      audio_buf->end_pts = start_pts + (double)len / audio_buf->bytes_per_sec;
-      audio_buf->has_pts = 1;
-    } else if (audio_buf->has_pts) {
-      audio_buf->end_pts += (double)len / audio_buf->bytes_per_sec;
-    }
-  }
-
-  SDL_UnlockMutex(audio_buf->lock);
 }
 
-void player_reset_audio_buffer(AudioBuffer *audio_buf) {
-  SDL_LockMutex(audio_buf->lock);
-  audio_buf->read_pos = 0;
-  audio_buf->write_pos = 0;
-  audio_buf->size = 0;
-  audio_buf->has_pts = 0;
-  audio_buf->end_pts = 0.0;
-  audio_buf->cb_valid = 0;
-  SDL_UnlockMutex(audio_buf->lock);
+void player_reset_audio_buffer(PlayerContext *ctx) {
+  if (ctx->sdl_stream) {
+    SDL_ClearAudioStream(ctx->sdl_stream);
+  }
 }
 
 double player_get_audio_clock(PlayerContext *ctx) {
-  if (ctx->audio_dev == 0 || !ctx->audio_buf.lock) return -1.0;
+  if (ctx->audio_dev == 0 || !ctx->sdl_stream || ctx->last_audio_pts < 0.0) return -1.0;
 
-  double result = -1.0;
-  SDL_LockMutex(ctx->audio_buf.lock);
-  if (ctx->audio_buf.cb_valid && ctx->audio_spec.freq > 0) {
-    double chunk_dur = ctx->audio_buf.cb_chunk_dur;
-    double elapsed   = get_monotonic_time() - ctx->audio_buf.cb_wall;
-    if (elapsed > chunk_dur) elapsed = chunk_dur;
-    result = ctx->audio_buf.cb_pts - chunk_dur + elapsed;    if (result < 0.0) result = 0.0;
+  int queued = SDL_GetAudioStreamQueued(ctx->sdl_stream);
+  if (ctx->bytes_per_sec > 0) {
+    double delay = (double)queued / ctx->bytes_per_sec;
+    return ctx->last_audio_pts - delay;
   }
-  SDL_UnlockMutex(ctx->audio_buf.lock);
-  return result;
+  return ctx->last_audio_pts;
 }
 
 int player_init_audio(PlayerContext *ctx) {
@@ -121,7 +34,6 @@ int player_init_audio(PlayerContext *ctx) {
   AVStream *st = ctx->fmt_ctx->streams[ctx->audio_stream];
   AVCodecParameters *par = st->codecpar;
   const AVCodec *codec = avcodec_find_decoder(par->codec_id);
-
   if (!codec) return 0;
 
   ctx->a_codec_ctx = avcodec_alloc_context3(codec);
@@ -135,60 +47,58 @@ int player_init_audio(PlayerContext *ctx) {
   SDL_AudioSpec wanted_spec;
   SDL_zero(wanted_spec);
   wanted_spec.freq = ctx->a_codec_ctx->sample_rate;
-  wanted_spec.format = AUDIO_S16SYS;
+  wanted_spec.format = SDL_AUDIO_S16;
   wanted_spec.channels = input_channels;
-  wanted_spec.silence = 0;
-  wanted_spec.samples = 2048;
-  wanted_spec.callback = sdl_audio_callback;
-  wanted_spec.userdata = &ctx->audio_buf;
 
-  ctx->audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted_spec, &ctx->audio_spec, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
+  ctx->audio_dev = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &wanted_spec);
   if (ctx->audio_dev == 0) goto fail;
 
-  ctx->output_channels = ctx->audio_spec.channels;
-  ctx->audio_buf.bytes_per_sec =
-      ctx->audio_spec.freq * ctx->output_channels * (int)sizeof(int16_t);
+  ctx->audio_spec = wanted_spec;
+
+  ctx->sdl_stream = SDL_CreateAudioStream(&wanted_spec, NULL);
+  if (!ctx->sdl_stream) goto fail;
+
+  SDL_BindAudioStream(ctx->audio_dev, ctx->sdl_stream);
+  SDL_ResumeAudioDevice(ctx->audio_dev);
+
+  SDL_SetAudioStreamGain(ctx->sdl_stream, ctx->volume);
+
+  ctx->output_channels = wanted_spec.channels;
+  ctx->bytes_per_sec = wanted_spec.freq * ctx->output_channels * (int)sizeof(int16_t);
+  ctx->volume = 1.0f;
 
   AVChannelLayout out_ch_layout;
   av_channel_layout_default(&out_ch_layout, ctx->output_channels);
 
   int swr_ret = swr_alloc_set_opts2(&ctx->swr_ctx, &out_ch_layout, AV_SAMPLE_FMT_S16,
-                                    ctx->audio_spec.freq,
+                                    wanted_spec.freq,
                                     &ctx->a_codec_ctx->ch_layout, ctx->a_codec_ctx->sample_fmt,
                                     ctx->a_codec_ctx->sample_rate, 0, NULL);
   av_channel_layout_uninit(&out_ch_layout);
 
   if (swr_ret < 0 || !ctx->swr_ctx || swr_init(ctx->swr_ctx) < 0) goto fail;
 
-  SDL_PauseAudioDevice(ctx->audio_dev, 0);
   return 1;
 
 fail:
-  if (ctx->audio_dev > 0) {
-    SDL_CloseAudioDevice(ctx->audio_dev);
-    ctx->audio_dev = 0;
-  }
+  if (ctx->sdl_stream) SDL_DestroyAudioStream(ctx->sdl_stream);
+  if (ctx->audio_dev > 0) SDL_CloseAudioDevice(ctx->audio_dev);
   if (ctx->swr_ctx) swr_free(&ctx->swr_ctx);
   if (ctx->a_codec_ctx) avcodec_free_context(&ctx->a_codec_ctx);
-  ctx->audio_buf.bytes_per_sec = 0;
   return 0;
 }
 
 void player_receive_audio_frames(PlayerContext *ctx) {
   while (avcodec_receive_frame(ctx->a_codec_ctx, ctx->frame_audio) == 0) {
     double frame_pts = -1.0;
-    {
-      int64_t apts = ctx->frame_audio->best_effort_timestamp;
-      if (apts != AV_NOPTS_VALUE) {
-        frame_pts = apts * av_q2d(ctx->fmt_ctx->streams[ctx->audio_stream]->time_base);
-      }
+    int64_t apts = ctx->frame_audio->best_effort_timestamp;
+    if (apts != AV_NOPTS_VALUE) {
+      frame_pts = apts * av_q2d(ctx->fmt_ctx->streams[ctx->audio_stream]->time_base);
     }
 
     if (ctx->audio_discard_until >= 0.0) {
-      int64_t apts = ctx->frame_audio->best_effort_timestamp;
       if (apts != AV_NOPTS_VALUE) {
-        double a_time = frame_pts;
-        if (a_time < ctx->audio_discard_until - 0.2) {
+        if (frame_pts < ctx->audio_discard_until - 0.2) {
           av_frame_unref(ctx->frame_audio);
           continue;
         }
@@ -213,13 +123,14 @@ void player_receive_audio_frames(PlayerContext *ctx) {
           int real_size = av_samples_get_buffer_size(NULL, ctx->output_channels, len, AV_SAMPLE_FMT_S16, 1);
           if (real_size > 0) {
             int sample_frame_size = ctx->output_channels * (int)sizeof(int16_t);
-            push_audio_data(&ctx->audio_buf, ctx->audio_out_buffer, real_size,
-                            sample_frame_size, frame_pts);
+            push_audio_data(ctx, ctx->audio_out_buffer, real_size, sample_frame_size, frame_pts);
+            if (frame_pts >= 0.0 && ctx->bytes_per_sec > 0) {
+              ctx->last_audio_pts = frame_pts + (double)real_size / ctx->bytes_per_sec;
+            }
           }
         }
       }
     }
-
     av_frame_unref(ctx->frame_audio);
   }
 }

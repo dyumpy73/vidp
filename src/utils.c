@@ -53,11 +53,10 @@ int compare_strings(const void *a, const void *b) {
 }
 
 SDL_Cursor* create_blank_cursor(void) {
-  SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormat(0, 1, 1, 32,
-                                                     SDL_PIXELFORMAT_RGBA32);
+  SDL_Surface *surf = SDL_CreateSurface(1, 1, SDL_PIXELFORMAT_RGBA32);
   if (!surf) return NULL;
-  SDL_FillRect(surf, NULL, SDL_MapRGBA(surf->format, 0, 0, 0, 0));
+  SDL_FillSurfaceRect(surf, NULL, SDL_MapSurfaceRGBA(surf, 0, 0, 0, 0));
   SDL_Cursor *cursor = SDL_CreateColorCursor(surf, 0, 0);
-  SDL_FreeSurface(surf);
+  SDL_DestroySurface(surf);
   return cursor;
 }

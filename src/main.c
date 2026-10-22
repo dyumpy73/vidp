@@ -12,12 +12,15 @@ int main(int argc, char *argv[]) {
   int playlist_count = 0;
   build_playlist(argc, argv, &playlist, &playlist_count);
 
-  SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "2");
-
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER | SDL_INIT_EVENTS)) {
-    fprintf(stderr, "[VidP] Failed to initialize SDL: %s\n", SDL_GetError());
+  if (!SDL_Init(SDL_INIT_VIDEO)) {
+    fprintf(stderr, "[VidP] Failed to initialize SDL VIDEO: %s\n", SDL_GetError());
     free_playlist(playlist, playlist_count);
     return -1;
+  }
+
+  if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+    fprintf(stderr, "[VidP] Warning: Failed to initialize SDL AUDIO: %s\n", SDL_GetError());
+    fprintf(stderr, "[VidP] Continuing without audio...\n");
   }
 
   if (playlist_count == 0) {
