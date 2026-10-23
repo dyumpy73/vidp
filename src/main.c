@@ -41,7 +41,9 @@ int main(int argc, char *argv[]) {
 
   while (playlist_index < playlist_count && !global_quit) {
     char *current_file = playlist[playlist_index];
-    printf("[VidP] (%d/%d) Playing: %s\n", playlist_index + 1, playlist_count, current_file);
+    const char *base = strrchr(current_file, '/');
+    base = base ? base + 1 : current_file;
+    printf("[VidP] (%d/%d) Playing: %s\n", playlist_index + 1, playlist_count, base);
 
     if (player_open_file(&ctx, current_file, playlist_index, playlist_count)) {
       player_run_loop(&ctx, &global_quit, &playlist_index);

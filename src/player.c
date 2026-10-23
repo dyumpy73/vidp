@@ -114,7 +114,6 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index, int to
   ctx->v_codec_ctx->opaque = ctx;
   ctx->hw_pix_fmt = AV_PIX_FMT_NONE;
 
-  // HW Accel block tetap sama
   static const enum AVHWDeviceType linux_hw_priority[] = { AV_HWDEVICE_TYPE_VAAPI, AV_HWDEVICE_TYPE_CUDA, AV_HWDEVICE_TYPE_VDPAU, AV_HWDEVICE_TYPE_NONE };
   for (int i = 0; linux_hw_priority[i] != AV_HWDEVICE_TYPE_NONE; i++) {
     for (int j = 0;; j++) {
@@ -184,8 +183,10 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index, int to
   ctx->packet = av_packet_alloc();
   if (!ctx->frame_video || !ctx->frame_audio || !ctx->packet) return 0;
 
+  const char *base = strrchr(filepath, '/');
+  base = base ? base + 1 : filepath;
   char title[512];
-  snprintf(title, sizeof(title), "VidP [%d/%d] - %s", index + 1, total, filepath);
+  snprintf(title, sizeof(title), "VidP [%d/%d] - %s", index + 1, total, base);
   return player_init_display(ctx, title);
 }
 

@@ -73,9 +73,10 @@ static void truncate_left(const char *in, char *out, size_t out_sz, int max_px) 
   int w = 0, h = 0;
   TTF_GetStringSize(g_font, in, 0, &w, &h);
   if (w <= max_px) { snprintf(out, out_sz, "%s", in); return; }
-  const char *p = in + strlen(in);
-  while (p > in) {
-    p--;
+  const char *p = in;
+  while (*p) {
+    p++;
+    while ((*p & 0xC0) == 0x80) p++;
     snprintf(out, out_sz, "...%s", p);
     TTF_GetStringSize(g_font, out, 0, &w, &h);
     if (w <= max_px) return;

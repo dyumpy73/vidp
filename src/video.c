@@ -79,6 +79,9 @@ void player_check_dynamic_resolution(PlayerContext *ctx, AVFrame *render_frame) 
   if (!render_frame || render_frame->width <= 0 || render_frame->height <= 0) return;
   if (render_frame->width == ctx->width && render_frame->height == ctx->height) return;
 
+  printf("[VidP] Dynamic resolution change: %dx%d -> %dx%d\n",
+         ctx->width, ctx->height, render_frame->width, render_frame->height);
+
   ctx->width  = render_frame->width;
   ctx->height = render_frame->height;
 
@@ -151,7 +154,7 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
     if (v_stride < 0) { v_ptr += v_stride * (ctx->height / 2 - 1); v_stride = -v_stride; }
 
     SDL_UpdateYUVTexture(ctx->texture, NULL, y_ptr, y_stride, u_ptr, u_stride, v_ptr, v_stride);
-  }  
+  } 
   player_present_frame(ctx);
 }
 
