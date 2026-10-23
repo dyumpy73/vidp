@@ -59,6 +59,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  player_shutdown_display();
   free_playlist(playlist, playlist_count);
   SDL_Quit();
 

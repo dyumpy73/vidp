@@ -34,8 +34,12 @@ int player_init_display(PlayerContext *ctx, const char *title) {
   int win_w = (int)disp_w; if (win_w < 64) win_w = 64;
   int win_h = (int)disp_h; if (win_h < 64) win_h = 64;
 
-  ctx->window = SDL_CreateWindow(title, win_w, win_h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
-  if (!ctx->window) return 0;
+  if (!ctx->window) {
+    ctx->window = SDL_CreateWindow(title, win_w, win_h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
+    if (!ctx->window) return 0;
+  } else {
+    SDL_SetWindowTitle(ctx->window, title);
+  }
 
   const char *drivers[] = { 
     "opengl",
@@ -43,10 +47,9 @@ int player_init_display(PlayerContext *ctx, const char *title) {
     "vulkan",
     "software",
     NULL 
-};
-  ctx->renderer = NULL;
+  };
 
-  for (int i = 0; drivers[i] != NULL; i++) {
+  for (int i = 0; ctx->renderer == NULL && drivers[i] != NULL; i++) {
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, drivers[i]);
     ctx->renderer = SDL_CreateRenderer(ctx->window, NULL);
     if (ctx->renderer) {
@@ -64,9 +67,7 @@ int player_init_display(PlayerContext *ctx, const char *title) {
   }
 
   if (!ctx->renderer) return 0;
-
-  SDL_ShowWindow(ctx->window);
-
+  if (SDL_GetWindowFlags(ctx->window) & SDL_WINDOW_HIDDEN) SDL_ShowWindow(ctx->window);
   ctx->texture = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_IYUV,
                                    SDL_TEXTUREACCESS_STREAMING, ctx->width, ctx->height);
   if (ctx->texture) {
@@ -154,7 +155,7 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
     if (v_stride < 0) { v_ptr += v_stride * (ctx->height / 2 - 1); v_stride = -v_stride; }
 
     SDL_UpdateYUVTexture(ctx->texture, NULL, y_ptr, y_stride, u_ptr, u_stride, v_ptr, v_stride);
-  } 
+  }
   player_present_frame(ctx);
 }
 

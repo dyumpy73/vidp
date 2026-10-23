@@ -1,6 +1,10 @@
 #include "player.h"
 
 static float g_master_volume = 1.0f;
+static SDL_Window   *g_window   = NULL;
+static SDL_Renderer *g_renderer = NULL;
+static SDL_Cursor   *g_blank_cursor = NULL;
+static int           g_cursor_hidden = 0;
 
 void player_do_seek(PlayerContext *ctx, double target_sec) {
   if (target_sec < 0.0) target_sec = 0.0;
@@ -54,6 +58,8 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
 
 int player_open_file(PlayerContext *ctx, const char *filepath, int index, int total) {
   memset(ctx, 0, sizeof(PlayerContext));
+  ctx->window   = g_window;
+  ctx->renderer = g_renderer;
   ctx->playlist_count = total;
   ctx->playlist_index = index;
   ctx->nav_action = NAV_NEXT;
@@ -70,10 +76,10 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index, int to
   ctx->subtitle_stream_count = 0;
   ctx->current_subtitle_idx = -1;
 
-  ctx->blank_cursor = create_blank_cursor();
+  if (!g_blank_cursor) g_blank_cursor = create_blank_cursor();
+  ctx->blank_cursor = g_blank_cursor;
   ctx->last_mouse_move = SDL_GetTicks();
-  ctx->cursor_hidden = 0;
-  SDL_SetCursor(SDL_GetDefaultCursor());
+  ctx->cursor_hidden = g_cursor_hidden;
 
   ctx->fmt_ctx = avformat_alloc_context();
   if (!ctx->fmt_ctx) return 0;
@@ -192,7 +198,7 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index, int to
 
 void player_close_file(PlayerContext *ctx) {
   if (ctx->audio_dev > 0) SDL_PauseAudioDevice(ctx->audio_dev);
-  if (ctx->blank_cursor) { SDL_DestroyCursor(ctx->blank_cursor); ctx->blank_cursor = NULL; }
+  if (ctx->blank_cursor) { g_cursor_hidden = ctx->cursor_hidden; ctx->blank_cursor = NULL; }
   if (ctx->sws_ctx) { sws_freeContext(ctx->sws_ctx); ctx->sws_ctx = NULL; }
   if (ctx->frame_yuv) av_frame_free(&ctx->frame_yuv);
 
@@ -224,9 +230,15 @@ void player_close_file(PlayerContext *ctx) {
 
   ctx->texture = NULL;
   ctx->current_tex_format = 0;
-  if (ctx->renderer) SDL_DestroyRenderer(ctx->renderer);
-  if (ctx->window) SDL_DestroyWindow(ctx->window);
+  g_renderer = ctx->renderer;
+  g_window = ctx->window;
   trim_memory();
+}
+
+void player_shutdown_display(void) {
+  if (g_blank_cursor) { SDL_SetCursor(SDL_GetDefaultCursor()); SDL_DestroyCursor(g_blank_cursor); g_blank_cursor = NULL; }
+  if (g_renderer) { SDL_DestroyRenderer(g_renderer); g_renderer = NULL; }
+  if (g_window) { SDL_DestroyWindow(g_window); g_window = NULL; }
 }
 
 void player_sleep_pumping(PlayerContext *ctx, double seconds) {

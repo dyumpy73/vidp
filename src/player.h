@@ -168,6 +168,7 @@ void player_update_ass_storage(PlayerContext *ctx);
 /* ---- player.c ---- */
 int  player_open_file(PlayerContext *ctx, const char *filepath, int index, int total);
 void player_close_file(PlayerContext *ctx);
+void player_shutdown_display(void);
 void player_run_loop(PlayerContext *ctx, int *global_quit, int *playlist_index);
 void player_do_seek(PlayerContext *ctx, double target_sec);
 void player_sleep_pumping(PlayerContext *ctx, double seconds);
