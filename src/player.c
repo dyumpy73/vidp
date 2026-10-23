@@ -262,28 +262,34 @@ void player_sleep_pumping(PlayerContext *ctx, double seconds) {
   }
 }
 
-void player_present_frame(PlayerContext *ctx) {
-  if (!ctx->texture) return;
-
-  int win_w, win_h;
+void player_compute_dest_rect(PlayerContext *ctx, SDL_FRect *dest_rect) {
+  int win_w = 0, win_h = 0;
   SDL_GetWindowSize(ctx->window, &win_w, &win_h);
+  if (win_w < 1) win_w = 1;
+  if (win_h < 1) win_h = 1;
 
   double video_aspect = ((double)ctx->width * ctx->sar_ratio) / (double)ctx->height;
   if (ctx->rotation == 90 || ctx->rotation == 270) video_aspect = 1.0 / video_aspect;
   float window_aspect = (float)win_w / (float)win_h;
 
-  SDL_FRect dest_rect;
   if (window_aspect > video_aspect) {
-    dest_rect.h = (float)win_h;
-    dest_rect.w = (float)(win_h * video_aspect);
-    dest_rect.x = (float)(win_w - dest_rect.w) / 2.0f;
-    dest_rect.y = 0.0f;
+    dest_rect->h = (float)win_h;
+    dest_rect->w = (float)(win_h * video_aspect);
+    dest_rect->x = (float)(win_w - dest_rect->w) / 2.0f;
+    dest_rect->y = 0.0f;
   } else {
-    dest_rect.w = (float)win_w;
-    dest_rect.h = (float)(win_w / video_aspect);
-    dest_rect.x = 0.0f;
-    dest_rect.y = (float)(win_h - dest_rect.h) / 2.0f;
+    dest_rect->w = (float)win_w;
+    dest_rect->h = (float)(win_w / video_aspect);
+    dest_rect->x = 0.0f;
+    dest_rect->y = (float)(win_h - dest_rect->h) / 2.0f;
   }
+}
+
+void player_present_frame(PlayerContext *ctx) {
+  if (!ctx->texture) return;
+
+  SDL_FRect dest_rect;
+  player_compute_dest_rect(ctx, &dest_rect);
 
   SDL_RenderClear(ctx->renderer);
   if (ctx->rotation != 0) {

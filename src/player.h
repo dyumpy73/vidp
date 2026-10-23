@@ -35,6 +35,7 @@
 #define MAX_SUBTITLE_STREAM     32
 #define SUBTITLE_PREROLL_SEC    1.5
 #define AV_SYNC_DROP_AUDIO     -0.050
+#define DOWNSCALE_MIN_RATIO     1.3
 
 typedef enum {
   NAV_NEXT = 0,
@@ -103,6 +104,8 @@ typedef struct {
   int frame_counter;
   int subtitle_visible;
   uint32_t current_tex_format;
+  int tex_w;
+  int tex_h;
 
   uint32_t last_mouse_move;
   int cursor_hidden;
@@ -174,5 +177,6 @@ void player_do_seek(PlayerContext *ctx, double target_sec);
 void player_sleep_pumping(PlayerContext *ctx, double seconds);
 void player_handle_events(PlayerContext *ctx, int *global_quit, int *playlist_index);
 void player_present_frame(PlayerContext *ctx);
+void player_compute_dest_rect(PlayerContext *ctx, SDL_FRect *dest_rect);
 
 #endif

@@ -47,7 +47,7 @@ int player_init_display(PlayerContext *ctx, const char *title) {
     "vulkan",
     "software",
     NULL 
-};
+  };
 
   for (int i = 0; ctx->renderer == NULL && drivers[i] != NULL; i++) {
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, drivers[i]);
@@ -97,23 +97,58 @@ void player_check_dynamic_resolution(PlayerContext *ctx, AVFrame *render_frame) 
   player_update_ass_storage(ctx);
 }
 
+static int downscale_enabled(void) {
+  static int enabled = -1;
+  if (enabled < 0) {
+    const char *e = getenv("VIDP_SCALE");
+    enabled = !(e && (strcmp(e, "off") == 0 || strcmp(e, "0") == 0));
+  }
+  return enabled;
+}
+
+static void player_pick_texture_size(PlayerContext *ctx, int *tw, int *th) {
+  *tw = ctx->width;
+  *th = ctx->height;
+  if (!downscale_enabled() || ctx->rotation != 0 || !ctx->window) return;
+
+  SDL_FRect dest;
+  player_compute_dest_rect(ctx, &dest);
+  if (dest.w < 2.0f || dest.h < 2.0f) return;
+  if ((double)ctx->width / dest.w < DOWNSCALE_MIN_RATIO) return;
+
+  int w = (int)(dest.w + 0.5f) & ~1;
+  int h = (int)(dest.h + 0.5f) & ~1;
+  if (w < 2) w = 2;
+  if (h < 2) h = 2;
+  if (w >= ctx->width || h >= ctx->height) return;
+  *tw = w;
+  *th = h;
+}
+
 void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
   AVFrame *final_frame = render_frame;
   int negative_stride = render_frame->linesize[0] < 0 || render_frame->linesize[1] < 0 || render_frame->linesize[2] < 0;
 
-  if (negative_stride || (render_frame->format != AV_PIX_FMT_YUV420P && render_frame->format != AV_PIX_FMT_NV12)) {
+  int tw, th;
+  player_pick_texture_size(ctx, &tw, &th);
+  int resize = (tw != ctx->width || th != ctx->height);
+
+  if (negative_stride || resize || (render_frame->format != AV_PIX_FMT_YUV420P && render_frame->format != AV_PIX_FMT_NV12)) {
+    if (ctx->frame_yuv && (ctx->frame_yuv->width != tw || ctx->frame_yuv->height != th)) {
+      av_frame_free(&ctx->frame_yuv);
+    }
     if (!ctx->frame_yuv) {
       ctx->frame_yuv = av_frame_alloc();
       if (!ctx->frame_yuv) return;
       ctx->frame_yuv->format = AV_PIX_FMT_YUV420P;
-      ctx->frame_yuv->width = ctx->width;
-      ctx->frame_yuv->height = ctx->height;
+      ctx->frame_yuv->width = tw;
+      ctx->frame_yuv->height = th;
       if (av_frame_get_buffer(ctx->frame_yuv, 32) < 0) { av_frame_free(&ctx->frame_yuv); return; }
     }
 
     ctx->sws_ctx = sws_getCachedContext(ctx->sws_ctx, render_frame->width, render_frame->height,
-        (enum AVPixelFormat)render_frame->format, ctx->width, ctx->height, AV_PIX_FMT_YUV420P,
-        SWS_BICUBIC, NULL, NULL, NULL);
+        (enum AVPixelFormat)render_frame->format, tw, th, AV_PIX_FMT_YUV420P,
+        resize ? SWS_AREA : SWS_BICUBIC, NULL, NULL, NULL);
 
     if (ctx->sws_ctx) {
       int scaled = sws_scale(ctx->sws_ctx, (const uint8_t *const *)render_frame->data,
@@ -127,10 +162,14 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
   SDL_PixelFormat req_format = SDL_PIXELFORMAT_IYUV;
   if (final_frame->format == AV_PIX_FMT_NV12) req_format = SDL_PIXELFORMAT_NV12;
 
-  if (!ctx->texture || ctx->current_tex_format != req_format) {
+  if (!ctx->texture || ctx->current_tex_format != req_format ||
+      ctx->tex_w != final_frame->width || ctx->tex_h != final_frame->height) {
     if (ctx->texture) SDL_DestroyTexture(ctx->texture);
-    ctx->texture = SDL_CreateTexture(ctx->renderer, req_format, SDL_TEXTUREACCESS_STREAMING, ctx->width, ctx->height);
+    ctx->texture = SDL_CreateTexture(ctx->renderer, req_format, SDL_TEXTUREACCESS_STREAMING,
+                                     final_frame->width, final_frame->height);
     ctx->current_tex_format = req_format;
+    ctx->tex_w = final_frame->width;
+    ctx->tex_h = final_frame->height;
     if (ctx->texture) SDL_SetTextureScaleMode(ctx->texture, SDL_SCALEMODE_LINEAR);
   }
 
@@ -138,12 +177,12 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
 
   int y_stride = final_frame->linesize[0];
   uint8_t *y_ptr = final_frame->data[0];
-  if (y_stride < 0) { y_ptr += y_stride * (ctx->height - 1); y_stride = -y_stride; }
+  if (y_stride < 0) { y_ptr += y_stride * (final_frame->height - 1); y_stride = -y_stride; }
 
   if (req_format == SDL_PIXELFORMAT_NV12) {
     int uv_stride = final_frame->linesize[1];
     uint8_t *uv_ptr = final_frame->data[1];
-    if (uv_stride < 0) { uv_ptr += uv_stride * (ctx->height / 2 - 1); uv_stride = -uv_stride; }
+    if (uv_stride < 0) { uv_ptr += uv_stride * (final_frame->height / 2 - 1); uv_stride = -uv_stride; }
 
     SDL_UpdateNVTexture(ctx->texture, NULL, y_ptr, y_stride, uv_ptr, uv_stride);
   } else {
@@ -151,8 +190,8 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
     int v_stride = final_frame->linesize[2];
     uint8_t *u_ptr = final_frame->data[1];
     uint8_t *v_ptr = final_frame->data[2];
-    if (u_stride < 0) { u_ptr += u_stride * (ctx->height / 2 - 1); u_stride = -u_stride; }
-    if (v_stride < 0) { v_ptr += v_stride * (ctx->height / 2 - 1); v_stride = -v_stride; }
+    if (u_stride < 0) { u_ptr += u_stride * (final_frame->height / 2 - 1); u_stride = -u_stride; }
+    if (v_stride < 0) { v_ptr += v_stride * (final_frame->height / 2 - 1); v_stride = -v_stride; }
 
     SDL_UpdateYUVTexture(ctx->texture, NULL, y_ptr, y_stride, u_ptr, u_stride, v_ptr, v_stride);
   }
