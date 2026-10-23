@@ -58,8 +58,8 @@ int player_init_audio(PlayerContext *ctx) {
   ctx->sdl_stream = SDL_CreateAudioStream(&wanted_spec, NULL);
   if (!ctx->sdl_stream) goto fail;
 
-  SDL_BindAudioStream(ctx->audio_dev, ctx->sdl_stream);
-  SDL_ResumeAudioDevice(ctx->audio_dev);
+  if (!SDL_BindAudioStream(ctx->audio_dev, ctx->sdl_stream)) goto fail;
+  if (!SDL_ResumeAudioDevice(ctx->audio_dev)) goto fail;
 
   SDL_SetAudioStreamGain(ctx->sdl_stream, ctx->volume);
 
@@ -80,10 +80,12 @@ int player_init_audio(PlayerContext *ctx) {
   return 1;
 
 fail:
-  if (ctx->sdl_stream) SDL_DestroyAudioStream(ctx->sdl_stream);
-  if (ctx->audio_dev > 0) SDL_CloseAudioDevice(ctx->audio_dev);
+  if (ctx->sdl_stream) { SDL_DestroyAudioStream(ctx->sdl_stream); ctx->sdl_stream = NULL; }
+  if (ctx->audio_dev > 0) { SDL_CloseAudioDevice(ctx->audio_dev); ctx->audio_dev = 0; }
   if (ctx->swr_ctx) swr_free(&ctx->swr_ctx);
   if (ctx->a_codec_ctx) avcodec_free_context(&ctx->a_codec_ctx);
+  ctx->bytes_per_sec = 0;
+  ctx->output_channels = 0;
   return 0;
 }
 

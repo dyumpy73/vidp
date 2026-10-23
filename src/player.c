@@ -29,7 +29,12 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
   }
 
   if (av_seek_frame(ctx->fmt_ctx, stream_idx, seek_target, AVSEEK_FLAG_BACKWARD) < 0) {
-    fprintf(stderr, "[VidP] av_seek_frame failed\n"); return;
+    fprintf(stderr, "[VidP] av_seek_frame failed\n");
+    if (ctx->audio_dev > 0) {
+      if (ctx->paused) SDL_PauseAudioDevice(ctx->audio_dev);
+      else SDL_ResumeAudioDevice(ctx->audio_dev);
+    }
+    return;
   }
 
   if (ctx->v_codec_ctx) avcodec_flush_buffers(ctx->v_codec_ctx);

@@ -47,7 +47,7 @@ int player_init_display(PlayerContext *ctx, const char *title) {
     "vulkan",
     "software",
     NULL 
-  };
+};
 
   for (int i = 0; ctx->renderer == NULL && drivers[i] != NULL; i++) {
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, drivers[i]);
@@ -187,6 +187,7 @@ static int should_stop_video(PlayerContext *ctx) {
 }
 
 void player_receive_video_frames(PlayerContext *ctx) {
+  if (!ctx->v_codec_ctx) return;
   while (!should_stop_video(ctx) && avcodec_receive_frame(ctx->v_codec_ctx, ctx->frame_video) == 0) {
     AVStream *st = ctx->fmt_ctx->streams[ctx->video_stream];
     int64_t pts = ctx->frame_video->best_effort_timestamp;
@@ -251,15 +252,18 @@ void player_receive_video_frames(PlayerContext *ctx) {
       ctx->consecutive_drops = 0;
 
       if (delay > AV_SYNC_DELAY_THRESHOLD) {
-        int queued = SDL_GetAudioStreamQueued(ctx->sdl_stream);
-        double queued_sec = (ctx->bytes_per_sec > 0) ? (double)queued / ctx->bytes_per_sec : 0.0;
-        
-        if (queued_sec < 0.1) {
-          delay = 0.0;
-        } else {
-          if (delay > queued_sec) delay = queued_sec;
+        int has_audio = ctx->audio_dev > 0 && ctx->sdl_stream && ctx->bytes_per_sec > 0;
+        if (has_audio) {
+          int queued = SDL_GetAudioStreamQueued(ctx->sdl_stream);
+          double queued_sec = (queued > 0) ? (double)queued / ctx->bytes_per_sec : 0.0;
+
+          if (queued_sec < 0.1) delay = 0.0;
+          else if (delay > queued_sec) delay = queued_sec;
+        }
+
+        if (delay > 0.0) {
           player_sleep_pumping(ctx, delay);
-          
+
           if (ctx->seek_requested || ctx->file_finished ||
               (ctx->global_quit_ref && *ctx->global_quit_ref)) {
             av_frame_unref(ctx->frame_video);
@@ -279,6 +283,7 @@ void player_receive_video_frames(PlayerContext *ctx) {
 }
 
 void player_process_video_packet(PlayerContext *ctx) {
+  if (!ctx->v_codec_ctx) { ctx->file_finished = 1; return; }
   int ret = avcodec_send_packet(ctx->v_codec_ctx, ctx->packet);
   if (ret == AVERROR(EAGAIN)) {
     player_receive_video_frames(ctx);
