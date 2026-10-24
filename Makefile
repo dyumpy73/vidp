@@ -1,9 +1,12 @@
-CC = gcc
-CFLAGS ?= -O2 -Wall -Wextra
+CC      ?= gcc
+CFLAGS  ?= -O2 -Wall -Wextra
+PREFIX  ?= /usr
+DESTDIR ?=
+STRIP   ?= strip
 
-PKGS = libavformat libavcodec libavutil libswscale libswresample libass sdl3 sdl3-ttf
+PKGS       = libavformat libavcodec libavutil libswscale libswresample libass sdl3 sdl3-ttf
 CFLAGS_PKG = $(shell pkg-config --cflags $(PKGS))
-LIBS = $(shell pkg-config --libs $(PKGS)) -lm -lpthread
+LIBS       = $(shell pkg-config --libs $(PKGS)) -lm -lpthread
 
 TARGET = vidp
 SRC = src/main.c \
@@ -13,8 +16,10 @@ SRC = src/main.c \
       src/subtitle.c \
       src/playlist.c \
       src/utils.c \
-			src/idle.c
+      src/idle.c
 OBJ = $(SRC:.c=.o)
+
+.PHONY: all debug release install uninstall clean
 
 all: $(TARGET)
 
@@ -29,15 +34,17 @@ debug: clean $(TARGET)
 
 release: CFLAGS = -O2 -Wall -Wextra
 release: clean $(TARGET)
-	strip $(TARGET)
+	$(STRIP) $(TARGET)
 
 install: release
-	install -Dm755 $(TARGET) /usr/local/bin/$(TARGET)
+	install -Dm755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/$(TARGET)
+	install -Dm644 assets/vidp.desktop $(DESTDIR)$(PREFIX)/share/applications/vidp.desktop
+	install -Dm644 assets/vidp.svg $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/vidp.svg
 
 uninstall:
-	rm -f /usr/local/bin/$(TARGET)
+	rm -f $(DESTDIR)$(PREFIX)/bin/$(TARGET)
+	rm -f $(DESTDIR)$(PREFIX)/share/applications/vidp.desktop
+	rm -f $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/vidp.svg
 
 clean:
 	rm -f $(TARGET) $(OBJ)
-
-.PHONY: all debug release install uninstall clean

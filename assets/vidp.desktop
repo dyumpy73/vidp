@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=VidP
+GenericName=Video Player
+Comment=Lightweight video player with playlist & ASS subtitle support
+Exec=/usr/bin/vidp %F
+Icon=vidp
+Terminal=false
+Categories=AudioVideo;Video;Player;
+MimeType=video/mp4;video/x-matroska;video/x-msvideo;video/webm;video/quicktime;video/x-flv;video/mp4v-es;video/mp2t;video/x-ms-wmv;video/mpeg;video/ogg;
+StartupNotify=true
+StartupWMClass=VidP

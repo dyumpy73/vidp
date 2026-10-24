@@ -35,6 +35,9 @@ A small video player written in C, built on **FFmpeg**, **SDL3**, and **libass**
 - `src/idle.c`      — idle screen + file picker
 - `src/utils.c`     — small utilities (clock, natural sort, media file check, blank cursor)
 - `src/player.h`    — shared types, tunables and declarations
+- `assets/vidp.desktop` — launcher entry (installed by `make install`)
+- `assets/icon.svg`     — application icon (installed by `make install`)
+- `Makefile`        — build & install rules
 
 ---
 
@@ -59,28 +62,47 @@ sudo apt install gcc pkg-config libavcodec-dev libavformat-dev libavutil-dev \
 
 ---
 
+## Install
+
+### Debian/Ubuntu:
+```bash
+wget https://github.com/dyumpy73/vidp/releases/latest/download/vidp_1.0.0_amd64.deb
+sudo dpkg -i vidp_1.0.0_amd64.deb && sudo apt install -f
+```
+
+### Any Linux (portable):
+```bash
+wget https://github.com/dyumpy73/vidp/releases/latest/download/VidP-x86_64.AppImage
+chmod +x VidP-x86_64.AppImage && ./VidP-x86_64.AppImage
+```
+
+---
+
 ## Building
 
-You can build the project using `make`:
-
 ```bash
-# Build the executable
+# Build the executable (debug-friendly, no strip)
 make
 
-# Build with debug symbols
+# Build with debug symbols (-g -O0)
 make debug
 
-# Build optimized release binary (stripped)
+# Build optimized release binary (-O2, stripped)
 make release
 
-# Install to system (optional, requires root)
+# Install to /usr/local (default, requires root)
 sudo make install
+
+# Install to a custom prefix
+sudo make install PREFIX=/usr          # system-wide, like distro packages
+sudo make install PREFIX=$HOME/.local  # user-only, no root needed
+
+# Uninstall (must use the same PREFIX as install)
+sudo make uninstall
+sudo make uninstall PREFIX=$HOME/.local
 
 # Clean build artifacts
 make clean
-
-# Uninstall from system
-sudo make uninstall
 ```
 
 Alternatively, to compile manually without Make:
@@ -161,17 +183,18 @@ vidp
 ## Known Limitations
 
 - Single audio track only — no runtime track switching.
-- Only ASS/SSA subtitle streams are supported. Text formats such as SRT / WebVTT / `mov_text` and image-based formats such as PGS / VobSub are ignored.
-- No subtitle delay adjustment (subtitle sync offset).
-- No hardware-accelerated subtitle blending (rendering is done on CPU via libass).
-- Audio output uses the file's own channel count and sample rate; the audio device is not re-initialized on a mid-stream channel layout change (stereo → 5.1).
-- Volume cannot go above 100%.
+- Only ASS/SSA subtitle streams are supported (SRT/WebVTT/PGS/VobSub are ignored).
+- Audio device is not re-initialized on mid-stream channel layout change.
 - Hardware acceleration backends are currently Linux-only (VAAPI, CUDA, VDPAU).
-- Subtitle pre-roll during seek may visually stall on very high-bitrate 4K content; the duration is configurable via `SUBTITLE_PREROLL_SEC` in `src/player.h`.
-- Drag & drop is only handled on the idle screen (not during playback), and does not work on Wayland native. Workarounds: use `Ctrl+O` on the idle screen, pass files as arguments, or "Open With VidP" from your file manager. The DnD code is kept intact and will work once SDL fixes it.
+- Drag & drop is only handled on the idle screen, and does not work on Wayland native. Workaround: use `Ctrl+O`, CLI args, or "Open With VidP".
 
 ---
 
 ## License
 
-This project is open-source and available under the **MIT License**.
+This project is open-source and available under the [GNU General Public License v2.0 or later](LICENSE).
+
+### Third-Party Licenses
+- **FFmpeg** (GPL-2.0-or-later) - [ffmpeg.org](https://ffmpeg.org/)
+- **SDL3** (zlib) - [libsdl.org](https://www.libsdl.org/)
+- **libass** (ISC) - [github.com/libass/libass](https://github.com/libass/libass)
