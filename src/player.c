@@ -11,8 +11,9 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
   if (ctx->audio_dev > 0) SDL_PauseAudioDevice(ctx->audio_dev);
 
   if (ctx->fmt_ctx->duration != AV_NOPTS_VALUE && ctx->fmt_ctx->duration > 0) {
+    double start = (ctx->fmt_ctx->start_time != AV_NOPTS_VALUE) ? (double)ctx->fmt_ctx->start_time / AV_TIME_BASE : 0.0;
     double dur = (double)ctx->fmt_ctx->duration / AV_TIME_BASE;
-    double max_target = dur - 0.5;
+    double max_target = start + dur - 0.5;
     if (max_target < 0.0) max_target = 0.0;
     if (target_sec > max_target) target_sec = max_target;
   }
@@ -39,7 +40,6 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
 
   if (ctx->v_codec_ctx) avcodec_flush_buffers(ctx->v_codec_ctx);
   if (ctx->a_codec_ctx) avcodec_flush_buffers(ctx->a_codec_ctx);
-  for (int i = 0; i < ctx->subtitle_stream_count; i++) if (ctx->ass_tracks[i]) ass_flush_events(ctx->ass_tracks[i]);
 
   player_reset_audio_buffer(ctx);
   if (ctx->swr_ctx) { swr_close(ctx->swr_ctx); swr_init(ctx->swr_ctx); }
@@ -76,7 +76,6 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index, int to
   ctx->video_stream = -1;
   ctx->audio_stream = -1;
   ctx->subtitle_stream = -1;
-  ctx->frame_counter = 0;
   ctx->subtitle_visible = 1;
   ctx->subtitle_stream_count = 0;
   ctx->current_subtitle_idx = -1;
@@ -377,8 +376,9 @@ void player_handle_events(PlayerContext *ctx, int *global_quit, int *playlist_in
           ctx->seek_target = base + step;
           if (ctx->seek_target < 0.0) ctx->seek_target = 0.0;
           if (ctx->fmt_ctx && ctx->fmt_ctx->duration != AV_NOPTS_VALUE && ctx->fmt_ctx->duration > 0) {
+            double start = (ctx->fmt_ctx->start_time != AV_NOPTS_VALUE) ? (double)ctx->fmt_ctx->start_time / AV_TIME_BASE : 0.0;
             double dur = (double)ctx->fmt_ctx->duration / AV_TIME_BASE;
-            if (ctx->seek_target >= dur - 0.5) { ctx->file_finished = 1; break; }
+            if (ctx->seek_target >= start + dur - 0.5) { ctx->file_finished = 1; break; }
           }
           ctx->seek_requested = 1;
           break;
@@ -427,8 +427,12 @@ void player_run_loop(PlayerContext *ctx, int *global_quit, int *playlist_index) 
         if (ctx->seek_requested) { seeked = 1; break; }
 
         if (!ctx->paused) {
-          int remaining = SDL_GetAudioStreamQueued(ctx->sdl_stream);
-          if (remaining <= 0) break;
+          if (ctx->sdl_stream) {
+            int remaining = SDL_GetAudioStreamQueued(ctx->sdl_stream);
+            if (remaining <= 0) break;
+          } else {
+            break;
+          }
           if (get_monotonic_time() - drain_start > 3.0) break;
         } else {
           drain_start = get_monotonic_time();

@@ -177,12 +177,10 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
 
   int y_stride = final_frame->linesize[0];
   uint8_t *y_ptr = final_frame->data[0];
-  if (y_stride < 0) { y_ptr += y_stride * (final_frame->height - 1); y_stride = -y_stride; }
 
   if (req_format == SDL_PIXELFORMAT_NV12) {
     int uv_stride = final_frame->linesize[1];
     uint8_t *uv_ptr = final_frame->data[1];
-    if (uv_stride < 0) { uv_ptr += uv_stride * (final_frame->height / 2 - 1); uv_stride = -uv_stride; }
 
     SDL_UpdateNVTexture(ctx->texture, NULL, y_ptr, y_stride, uv_ptr, uv_stride);
   } else {
@@ -190,8 +188,6 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
     int v_stride = final_frame->linesize[2];
     uint8_t *u_ptr = final_frame->data[1];
     uint8_t *v_ptr = final_frame->data[2];
-    if (u_stride < 0) { u_ptr += u_stride * (final_frame->height / 2 - 1); u_stride = -u_stride; }
-    if (v_stride < 0) { v_ptr += v_stride * (final_frame->height / 2 - 1); v_stride = -v_stride; }
 
     SDL_UpdateYUVTexture(ctx->texture, NULL, y_ptr, y_stride, u_ptr, u_stride, v_ptr, v_stride);
   }
@@ -215,7 +211,12 @@ static void player_fallback_to_sw(PlayerContext *ctx) {
   ctx->v_codec_ctx->thread_type  = FF_THREAD_FRAME | FF_THREAD_SLICE;
   ctx->v_codec_ctx->opaque       = ctx;
 
-  if (avcodec_open2(ctx->v_codec_ctx, v_codec, NULL) < 0) avcodec_free_context(&ctx->v_codec_ctx);
+  if (avcodec_open2(ctx->v_codec_ctx, v_codec, NULL) < 0) { 
+    avcodec_free_context(&ctx->v_codec_ctx);
+  } else {
+    ctx->seek_target = ctx->last_video_time;
+    ctx->seek_requested = 1;
+  }
 }
 
 static int should_stop_video(PlayerContext *ctx) {
@@ -317,7 +318,6 @@ void player_receive_video_frames(PlayerContext *ctx) {
     ctx->step_pending = 0;
     av_frame_unref(ctx->frame_video);
     if (sw_frame) av_frame_free(&sw_frame);
-    ctx->frame_counter++;
   }
 }
 

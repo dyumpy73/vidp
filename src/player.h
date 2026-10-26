@@ -71,6 +71,7 @@ typedef struct {
   int output_channels;
   int bytes_per_sec;
   float volume;
+  double audio_hw_delay;
 
   ASS_Library *ass_library;
   ASS_Renderer *ass_renderer;
@@ -101,7 +102,6 @@ typedef struct {
   int is_hw_accel;
   enum AVPixelFormat hw_pix_fmt;
   int hw_transfer_failures;
-  int frame_counter;
   int subtitle_visible;
   uint32_t current_tex_format;
   int tex_w;

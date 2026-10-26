@@ -5,10 +5,7 @@ static void push_audio_data(PlayerContext *ctx, const uint8_t *data, size_t len,
   if (frame_size <= 0) frame_size = 4;
   len = (len / frame_size) * frame_size;
   if (len == 0) return;
-
-  if (len > 0) {
-    SDL_PutAudioStreamData(ctx->sdl_stream, data, (int)len);    
-  }
+  SDL_PutAudioStreamData(ctx->sdl_stream, data, (int)len);
 }
 
 void player_reset_audio_buffer(PlayerContext *ctx) {
@@ -23,6 +20,8 @@ double player_get_audio_clock(PlayerContext *ctx) {
   int queued = SDL_GetAudioStreamQueued(ctx->sdl_stream);
   if (ctx->bytes_per_sec > 0) {
     double delay = (double)queued / ctx->bytes_per_sec;
+    delay += ctx->audio_hw_delay;
+
     return ctx->last_audio_pts - delay;
   }
   return ctx->last_audio_pts;
@@ -53,7 +52,14 @@ int player_init_audio(PlayerContext *ctx) {
   ctx->audio_dev = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &wanted_spec);
   if (ctx->audio_dev == 0) goto fail;
 
-  ctx->audio_spec = wanted_spec;
+  int hw_sample_frames = 1024;
+  SDL_GetAudioDeviceFormat(ctx->audio_dev, &ctx->audio_spec, &hw_sample_frames);
+
+  if (ctx->audio_spec.freq > 0) {
+    ctx->audio_hw_delay = (double)hw_sample_frames / (double)ctx->audio_spec.freq;
+  } else {
+    ctx->audio_hw_delay = 0.0;
+  }
 
   ctx->sdl_stream = SDL_CreateAudioStream(&wanted_spec, NULL);
   if (!ctx->sdl_stream) goto fail;

@@ -1,4 +1,6 @@
 #include "player.h"
+#include <ctype.h>
+#include <stdlib.h>
 #include <limits.h>
 
 #ifndef PATH_MAX
@@ -271,8 +273,7 @@ static void picker_draw(SDL_Renderer *ren, Picker *p, int ww, int wh) {
   render_text_left(ren, footer, dim, 24, wh - 28);
 }
 
-static int picker_run(SDL_Window *win, SDL_Renderer *ren,
-                      char ***out_files, int *out_count) {
+static int picker_run(SDL_Window *win, SDL_Renderer *ren, char ***out_files, int *out_count, int *quit_flag) {
   *out_files = NULL;
   *out_count = 0;
 
@@ -295,6 +296,7 @@ static int picker_run(SDL_Window *win, SDL_Renderer *ren,
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
       if (e.type == SDL_EVENT_QUIT) {
+        if (quit_flag) *quit_flag = 1;
         done = 1;
       }
       else if (e.type == SDL_EVENT_KEY_UP) {
@@ -430,15 +432,34 @@ static int picker_run(SDL_Window *win, SDL_Renderer *ren,
   return confirmed;
 }
 
-static void clean_drop_path(const char *raw, char *out, size_t out_sz) {
-  snprintf(out, out_sz, "%s", raw);
-  char *p = out;
-  if (strncmp(p, "file://", 7) == 0) p += 7;
-  size_t plen = strlen(p);
-  while (plen > 0 && (p[plen - 1] == '\n' || p[plen - 1] == '\r')) {
-    p[--plen] = '\0';
+static void url_decode(const char *in, char *out, size_t out_sz) {
+  size_t i = 0;
+  while (*in && i < out_sz - 1) {
+    if (*in == '%' && isxdigit((unsigned char)in[1]) && isxdigit((unsigned char)in[2])) {
+      char hex[3] = { in[1], in[2], '\0' };
+      out[i++] = (char)strtol(hex, NULL, 16);
+      in += 3;
+    } else {
+      out[i++] = *in++;
+    }
   }
-  if (p != out) memmove(out, p, plen + 1);
+  out[i] = '\0';
+}
+
+static void clean_drop_path(const char *raw, char *out, size_t out_sz) {
+  char temp[PATH_MAX];
+  snprintf(temp, sizeof(temp), "%s", raw);
+  char *p = temp;
+  if (strncmp(p, "file://", 7) == 0) p += 7;
+  
+  char decoded[PATH_MAX];
+  url_decode(p, decoded, sizeof(decoded));
+  
+  size_t plen = strlen(decoded);
+  while (plen > 0 && (decoded[plen - 1] == '\n' || decoded[plen - 1] == '\r')) {
+    decoded[--plen] = '\0';
+  }
+  snprintf(out, out_sz, "%s", decoded);
 }
 
 int player_idle_run(char ***out_playlist, int *out_count) {
@@ -478,7 +499,7 @@ int player_idle_run(char ***out_playlist, int *out_count) {
           quit = 1;
         }
         else if (e.key.key == SDLK_O && (e.key.mod & SDL_KMOD_CTRL) && !e.key.repeat) {
-          if (picker_run(win, ren, out_playlist, out_count)) {
+          if (picker_run(win, ren, out_playlist, out_count, &quit)) {
             got_files = 1;
           }
         }
