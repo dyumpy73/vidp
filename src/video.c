@@ -34,14 +34,24 @@ int player_init_display(PlayerContext *ctx, const char *title) {
   int win_w = (int)disp_w; if (win_w < 64) win_w = 64;
   int win_h = (int)disp_h; if (win_h < 64) win_h = 64;
 
-  if (!ctx->window) {
+    if (!ctx->window) {
     ctx->window = SDL_CreateWindow(title, win_w, win_h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
     if (!ctx->window) return 0;
   } else {
     SDL_SetWindowTitle(ctx->window, title);
-    if (!(SDL_GetWindowFlags(ctx->window) & SDL_WINDOW_FULLSCREEN)) SDL_SetWindowSize(ctx->window, win_w, win_h);
-  }
+    
+    Uint32 flags = SDL_GetWindowFlags(ctx->window);
+    int is_maximized = (flags & SDL_WINDOW_MAXIMIZED) != 0;
+    int is_fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
 
+    int is_tiling_wm = (getenv("SWAYSOCK") != NULL) || 
+                       (getenv("HYPRLAND_INSTANCE_SIGNATURE") != NULL) || 
+                       (getenv("NIRI_SOCKET") != NULL);
+
+    if (!is_tiling_wm && !is_maximized && !is_fullscreen) {
+      SDL_SetWindowSize(ctx->window, win_w, win_h);
+    }
+  }
   const char *drivers[] = { 
     "opengl",
     "opengles2",
