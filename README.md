@@ -66,8 +66,8 @@ sudo apt install gcc pkg-config libavcodec-dev libavformat-dev libavutil-dev \
 
 ### Debian/Ubuntu:
 ```bash
-wget https://github.com/dyumpy73/vidp/releases/latest/download/vidp_1.0.0_amd64.deb
-sudo dpkg -i vidp_1.0.0_amd64.deb && sudo apt install -f
+wget https://github.com/dyumpy73/vidp/releases/latest/download/vidp_0.0.1_amd64.deb
+sudo dpkg -i vidp_0.0.1_amd64.deb && sudo apt install -f
 ```
 
 ### Any Linux (portable):
@@ -186,7 +186,6 @@ vidp
 - Only ASS/SSA subtitle streams are supported (SRT/WebVTT/PGS/VobSub are ignored).
 - Audio device is not re-initialized on mid-stream channel layout change.
 - Hardware acceleration backends are currently Linux-only (VAAPI, CUDA, VDPAU).
-- Drag & drop is only handled on the idle screen, and does not work on Wayland native. Workaround: use `Ctrl+O`, CLI args, or "Open With VidP".
 
 ---
 
