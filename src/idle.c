@@ -1,3 +1,6 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "player.h"
 #include <ctype.h>
 #include <stdlib.h>
@@ -14,8 +17,13 @@ static const char *g_body_fonts[] = {
   "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
   "/usr/share/fonts/TTF/DejaVuSans.ttf",
   "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+  "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
   "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+  "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
+  "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
   "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+  "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
+  "/usr/share/fonts/noto/NotoSans-Regular.ttf",
   NULL
 };
 
@@ -27,6 +35,16 @@ static const char *find_font(const char **cands) {
   return NULL;
 }
 
+static char g_fc_font[PATH_MAX];
+static const char *find_font_fc(void) {
+  FILE *p = popen("fc-match -f '%{file}' sans 2>/dev/null", "r");
+  if (!p) return NULL;
+  size_t n = fread(g_fc_font, 1, sizeof(g_fc_font) - 1, p);
+  pclose(p);
+  g_fc_font[n] = '\0';
+  return n ? g_fc_font : NULL;
+}
+
 static int idle_init_ttf(void) {
   if (g_ttf_ready) return 1;
   if (!TTF_Init()) {
@@ -34,7 +52,11 @@ static int idle_init_ttf(void) {
     return 0;
   }
   const char *bp = find_font(g_body_fonts);
+  if (!bp) bp = find_font_fc();
   if (bp) g_font = TTF_OpenFont(bp, 16);
+  if (!g_font)
+    fprintf(stderr, "[VidP] Warning: no UI font found; idle/picker text will be blank. "
+                    "Install DejaVu/Liberation/Noto fonts.\n");
   g_ttf_ready = 1;
   return 1;
 }
@@ -44,30 +66,63 @@ static void idle_cleanup_ttf(void) {
   if (g_ttf_ready) { TTF_Quit(); g_ttf_ready = 0; }
 }
 
-static void render_text_centered(SDL_Renderer *r, const char *text, SDL_Color c, int cx, int y) {
-  if (!g_font) return;
-  SDL_Surface *s = TTF_RenderText_Blended(g_font, text, 0, c);
-  if (!s) return;
-  SDL_Texture *t = SDL_CreateTextureFromSurface(r, s);
-  if (t) {
-    SDL_FRect dst = { (float)(cx - s->w / 2), (float)y, (float)s->w, (float)s->h };
-    SDL_RenderTexture(r, t, NULL, &dst);
-    SDL_DestroyTexture(t);
+#define TC_N 96
+typedef struct { char *text; SDL_Color c; SDL_Texture *t; int w, h; unsigned long used; } TextEnt;
+static TextEnt g_tc[TC_N];
+static unsigned long g_tc_tick = 0;
+
+static void text_cache_clear(void) {
+  for (int i = 0; i < TC_N; i++) {
+    if (g_tc[i].t) SDL_DestroyTexture(g_tc[i].t);
+    free(g_tc[i].text);
+    memset(&g_tc[i], 0, sizeof(g_tc[i]));
   }
+}
+
+static TextEnt *text_cache_get(SDL_Renderer *r, const char *text, SDL_Color c) {
+  if (!g_font) return NULL;
+  for (int i = 0; i < TC_N; i++) {
+    TextEnt *e = &g_tc[i];
+    if (e->t && e->text && !strcmp(e->text, text) &&
+        e->c.r == c.r && e->c.g == c.g && e->c.b == c.b && e->c.a == c.a) {
+      e->used = ++g_tc_tick;
+      return e;
+    }
+  }
+  int victim = 0;
+  for (int i = 0; i < TC_N; i++) {
+    if (!g_tc[i].t) { victim = i; break; }
+    if (g_tc[i].used < g_tc[victim].used) victim = i;
+  }
+  TextEnt *e = &g_tc[victim];
+  if (e->t) SDL_DestroyTexture(e->t);
+  free(e->text);
+  memset(e, 0, sizeof(*e));
+
+  SDL_Surface *s = TTF_RenderText_Blended(g_font, text, 0, c);
+  if (!s) return NULL;
+  e->t = SDL_CreateTextureFromSurface(r, s);
+  e->w = s->w; e->h = s->h;
   SDL_DestroySurface(s);
+  e->text = strdup(text);
+  if (!e->t || !e->text) { text_cache_clear(); return NULL; }
+  e->c = c;
+  e->used = ++g_tc_tick;
+  return e;
+}
+
+static void render_text_centered(SDL_Renderer *r, const char *text, SDL_Color c, int cx, int y) {
+  TextEnt *e = text_cache_get(r, text, c);
+  if (!e) return;
+  SDL_FRect dst = { (float)(cx - e->w / 2), (float)y, (float)e->w, (float)e->h };
+  SDL_RenderTexture(r, e->t, NULL, &dst);
 }
 
 static void render_text_left(SDL_Renderer *r, const char *text, SDL_Color c, int x, int y) {
-  if (!g_font) return;
-  SDL_Surface *s = TTF_RenderText_Blended(g_font, text, 0, c);
-  if (!s) return;
-  SDL_Texture *t = SDL_CreateTextureFromSurface(r, s);
-  if (t) {
-    SDL_FRect dst = { (float)x, (float)y, (float)s->w, (float)s->h };
-    SDL_RenderTexture(r, t, NULL, &dst);
-    SDL_DestroyTexture(t);
-  }
-  SDL_DestroySurface(s);
+  TextEnt *e = text_cache_get(r, text, c);
+  if (!e) return;
+  SDL_FRect dst = { (float)x, (float)y, (float)e->w, (float)e->h };
+  SDL_RenderTexture(r, e->t, NULL, &dst);
 }
 
 static void truncate_left(const char *in, char *out, size_t out_sz, int max_px) {
@@ -286,15 +341,18 @@ static int picker_run(SDL_Window *win, SDL_Renderer *ren, char ***out_files, int
 
   int confirmed = 0;
   int done = 0;
+  int dirty = 1;
 
   while (!done) {
     const bool *kbd = SDL_GetKeyboardState(NULL);
     if (!kbd[SDL_SCANCODE_SPACE] && p.space_held) {
       picker_commit(&p);
+      dirty = 1;
     }
 
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
+      dirty = 1;
       if (e.type == SDL_EVENT_QUIT) {
         if (quit_flag) *quit_flag = 1;
         done = 1;
@@ -421,10 +479,13 @@ static int picker_run(SDL_Window *win, SDL_Renderer *ren, char ***out_files, int
 
     if (done) break;
 
-    int ww, wh;
-    SDL_GetWindowSize(win, &ww, &wh);
-    picker_draw(ren, &p, ww, wh);
-    SDL_RenderPresent(ren);
+    if (dirty) {
+      int ww, wh;
+      SDL_GetWindowSize(win, &ww, &wh);
+      picker_draw(ren, &p, ww, wh);
+      SDL_RenderPresent(ren);
+      dirty = 0;
+    }
     SDL_Delay(16);
   }
 
@@ -450,10 +511,12 @@ static void clean_drop_path(const char *raw, char *out, size_t out_sz) {
   char temp[PATH_MAX];
   snprintf(temp, sizeof(temp), "%s", raw);
   char *p = temp;
-  if (strncmp(p, "file://", 7) == 0) p += 7;
-  
+  int is_uri = 0;
+  if (strncmp(p, "file://", 7) == 0) { p += 7; is_uri = 1; }
+
   char decoded[PATH_MAX];
-  url_decode(p, decoded, sizeof(decoded));
+  if (is_uri) url_decode(p, decoded, sizeof(decoded));
+  else snprintf(decoded, sizeof(decoded), "%s", p);
   
   size_t plen = strlen(decoded);
   while (plen > 0 && (decoded[plen - 1] == '\n' || decoded[plen - 1] == '\r')) {
@@ -479,10 +542,14 @@ int player_idle_run(char ***out_playlist, int *out_count) {
 
   int got_files = 0;
   int quit = 0;
+  int dirty = 1;
+  int from_drop = 0;
+  Uint64 last_drop = 0;
 
   while (!quit && !got_files) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
+      dirty = 1;
       if (e.type == SDL_EVENT_QUIT) {
         quit = 1;
       }
@@ -491,8 +558,13 @@ int player_idle_run(char ***out_playlist, int *out_count) {
           char clean[PATH_MAX];
           clean_drop_path(e.drop.data, clean, sizeof(clean));
           playlist_collect_path(clean, out_playlist, out_count);
-          if (*out_count > 0) got_files = 1;
+          last_drop = SDL_GetTicks();
+          from_drop = 1;
         }
+      }
+      else if (e.type == SDL_EVENT_DROP_COMPLETE) {
+        /* [S6b] all dropped files have arrived */
+        if (*out_count > 0) got_files = 1;
       }
       else if (e.type == SDL_EVENT_KEY_DOWN) {
         if (e.key.key == SDLK_ESCAPE) {
@@ -502,23 +574,33 @@ int player_idle_run(char ***out_playlist, int *out_count) {
           if (picker_run(win, ren, out_playlist, out_count, &quit)) {
             got_files = 1;
           }
+          dirty = 1;
         }
       }
     }
 
-    int ww = 0, wh = 0;
-    SDL_GetWindowSize(win, &ww, &wh);
+    if (!got_files && from_drop && *out_count > 0 && SDL_GetTicks() - last_drop > 200)
+      got_files = 1;
+    if (got_files && from_drop && *out_count > 1)
+      qsort(*out_playlist, (size_t)*out_count, sizeof(char *), compare_strings);
 
-    SDL_SetRenderDrawColor(ren, 0x10, 0x10, 0x12, 0xFF);
-    SDL_RenderClear(ren);
+    if (dirty && !got_files && !quit) {
+      int ww = 0, wh = 0;
+      SDL_GetWindowSize(win, &ww, &wh);
 
-    SDL_Color dim = { 80, 80, 90, 255 };
-    render_text_centered(ren, "ctrl+o open   ·   esc quit   ·   drop files here", dim, ww/2, wh - 32);
+      SDL_SetRenderDrawColor(ren, 0x10, 0x10, 0x12, 0xFF);
+      SDL_RenderClear(ren);
 
-    SDL_RenderPresent(ren);
+      SDL_Color dim = { 80, 80, 90, 255 };
+      render_text_centered(ren, "ctrl+o open   ·   esc quit   ·   drop files here", dim, ww/2, wh - 32);
+
+      SDL_RenderPresent(ren);
+      dirty = 0;
+    }
     SDL_Delay(16);
   }
 
+  text_cache_clear();
   SDL_DestroyRenderer(ren);
   SDL_DestroyWindow(win);
   idle_cleanup_ttf();

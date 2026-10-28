@@ -1,5 +1,7 @@
 #include "player.h"
 
+static inline uint8_t clamp8(int v) { return v > 255 ? 255 : (uint8_t)v; }
+
 static inline void blend_ass_pixel(uint32_t *pixel, uint8_t r, uint8_t g, uint8_t b, uint8_t final_a) {
   uint32_t px = *pixel;
   uint8_t ex_a = (px >> 24) & 0xFF;
@@ -16,9 +18,9 @@ static inline void blend_ass_pixel(uint32_t *pixel, uint8_t r, uint8_t g, uint8_
 
   uint8_t out_a = final_a + ex_a * (255 - final_a) / 255;
   if (out_a > 0) {
-    uint8_t out_r = (r * final_a + ex_r * ex_a * (255 - final_a) / 255) / out_a;
-    uint8_t out_g = (g * final_a + ex_g * ex_a * (255 - final_a) / 255) / out_a;
-    uint8_t out_b = (b * final_a + ex_b * ex_a * (255 - final_a) / 255) / out_a;
+    uint8_t out_r = clamp8((r * final_a + ex_r * ex_a * (255 - final_a) / 255) / out_a);
+    uint8_t out_g = clamp8((g * final_a + ex_g * ex_a * (255 - final_a) / 255) / out_a);
+    uint8_t out_b = clamp8((b * final_a + ex_b * ex_a * (255 - final_a) / 255) / out_a);
     *pixel = ((uint32_t)out_a << 24) | ((uint32_t)out_b << 16) | ((uint32_t)out_g << 8) | out_r;
   }
 }

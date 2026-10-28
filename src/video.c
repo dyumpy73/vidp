@@ -39,6 +39,7 @@ int player_init_display(PlayerContext *ctx, const char *title) {
     if (!ctx->window) return 0;
   } else {
     SDL_SetWindowTitle(ctx->window, title);
+    if (!(SDL_GetWindowFlags(ctx->window) & SDL_WINDOW_FULLSCREEN)) SDL_SetWindowSize(ctx->window, win_w, win_h);
   }
 
   const char *drivers[] = { 
@@ -121,8 +122,45 @@ static void player_pick_texture_size(PlayerContext *ctx, int *tw, int *th) {
   if (w < 2) w = 2;
   if (h < 2) h = 2;
   if (w >= ctx->width || h >= ctx->height) return;
+
+  if (ctx->texture && ctx->tex_w > 0 && ctx->tex_w < ctx->width &&
+      ctx->tex_h < ctx->height && abs(w - ctx->tex_w) * 10 <= ctx->tex_w) {
+    w = ctx->tex_w;
+    h = ctx->tex_h;
+  }
   *tw = w;
   *th = h;
+}
+
+static SDL_Colorspace pick_colorspace(const AVFrame *src, int range_normalized, int height) {
+  int full = (src->color_range == AVCOL_RANGE_JPEG) && !range_normalized;
+  switch (src->colorspace) {
+    case AVCOL_SPC_BT470BG:
+    case AVCOL_SPC_SMPTE170M:
+      return full ? SDL_COLORSPACE_BT601_FULL : SDL_COLORSPACE_BT601_LIMITED;
+    case AVCOL_SPC_BT2020_NCL:
+    case AVCOL_SPC_BT2020_CL:
+      return full ? SDL_COLORSPACE_BT2020_FULL : SDL_COLORSPACE_BT2020_LIMITED;
+    case AVCOL_SPC_BT709:
+      return full ? SDL_COLORSPACE_BT709_FULL : SDL_COLORSPACE_BT709_LIMITED;
+    default:
+      if (height > 576) return full ? SDL_COLORSPACE_BT709_FULL : SDL_COLORSPACE_BT709_LIMITED;
+      return full ? SDL_COLORSPACE_BT601_FULL : SDL_COLORSPACE_BT601_LIMITED;
+  }
+}
+
+static SDL_Texture *create_video_texture(SDL_Renderer *r, SDL_PixelFormat fmt,
+                                         int w, int h, SDL_Colorspace cs) {
+  SDL_PropertiesID p = SDL_CreateProperties();
+  if (!p) return NULL;
+  SDL_SetNumberProperty(p, SDL_PROP_TEXTURE_CREATE_FORMAT_NUMBER, fmt);
+  SDL_SetNumberProperty(p, SDL_PROP_TEXTURE_CREATE_ACCESS_NUMBER, SDL_TEXTUREACCESS_STREAMING);
+  SDL_SetNumberProperty(p, SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, w);
+  SDL_SetNumberProperty(p, SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, h);
+  SDL_SetNumberProperty(p, SDL_PROP_TEXTURE_CREATE_COLORSPACE_NUMBER, cs);
+  SDL_Texture *t = SDL_CreateTextureWithProperties(r, p);
+  SDL_DestroyProperties(p);
+  return t;
 }
 
 void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
@@ -162,12 +200,20 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
   SDL_PixelFormat req_format = SDL_PIXELFORMAT_IYUV;
   if (final_frame->format == AV_PIX_FMT_NV12) req_format = SDL_PIXELFORMAT_NV12;
 
-  if (!ctx->texture || ctx->current_tex_format != req_format ||
+  int j_fmt = render_frame->format == AV_PIX_FMT_YUVJ420P ||
+              render_frame->format == AV_PIX_FMT_YUVJ422P ||
+              render_frame->format == AV_PIX_FMT_YUVJ444P ||
+              render_frame->format == AV_PIX_FMT_YUVJ440P;
+  SDL_Colorspace cs = pick_colorspace(render_frame, (final_frame != render_frame) && j_fmt,
+                                      render_frame->height);
+
+  if (!ctx->texture || ctx->current_tex_format != req_format || ctx->tex_cs != (uint32_t)cs ||
       ctx->tex_w != final_frame->width || ctx->tex_h != final_frame->height) {
     if (ctx->texture) SDL_DestroyTexture(ctx->texture);
-    ctx->texture = SDL_CreateTexture(ctx->renderer, req_format, SDL_TEXTUREACCESS_STREAMING,
-                                     final_frame->width, final_frame->height);
+    ctx->texture = create_video_texture(ctx->renderer, req_format,
+                                        final_frame->width, final_frame->height, cs);
     ctx->current_tex_format = req_format;
+    ctx->tex_cs = (uint32_t)cs;
     ctx->tex_w = final_frame->width;
     ctx->tex_h = final_frame->height;
     if (ctx->texture) SDL_SetTextureScaleMode(ctx->texture, SDL_SCALEMODE_LINEAR);
@@ -292,7 +338,8 @@ void player_receive_video_frames(PlayerContext *ctx) {
       ctx->consecutive_drops = 0;
 
       if (delay > AV_SYNC_DELAY_THRESHOLD) {
-        int has_audio = ctx->audio_dev > 0 && ctx->sdl_stream && ctx->bytes_per_sec > 0;
+        int has_audio = audio_clock >= 0.0 &&
+                        ctx->audio_dev > 0 && ctx->sdl_stream && ctx->bytes_per_sec > 0;
         if (has_audio) {
           int queued = SDL_GetAudioStreamQueued(ctx->sdl_stream);
           double queued_sec = (queued > 0) ? (double)queued / ctx->bytes_per_sec : 0.0;

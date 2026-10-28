@@ -53,6 +53,7 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
   ctx->audio_discard_until = target_sec;
   ctx->consecutive_drops = 0;
   ctx->sub_has_pixels = 0;
+  ctx->audio_starve_since = 0.0;
 
   if (ctx->audio_dev > 0) {
     if (ctx->paused) SDL_PauseAudioDevice(ctx->audio_dev);
@@ -440,8 +441,11 @@ void player_run_loop(PlayerContext *ctx, int *global_quit, int *playlist_index) 
         SDL_Delay(20);
       }
       if (seeked) { av_packet_unref(ctx->packet); continue; }
-      if (ctx->audio_dev > 0 && !*global_quit && !ctx->file_finished && ctx->audio_spec.freq > 0) {
-        SDL_Delay(20);
+      if (ctx->audio_dev > 0 && ctx->sdl_stream && !*global_quit && !ctx->file_finished) {
+        double tail = ctx->audio_hw_delay;
+        if (tail < 0.0) tail = 0.0;
+        if (tail > 0.5) tail = 0.5;
+        SDL_Delay((Uint32)(tail * 1000.0) + 20);
       }
       ctx->file_finished = 1;
       break;

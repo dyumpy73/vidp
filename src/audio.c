@@ -16,8 +16,16 @@ void player_reset_audio_buffer(PlayerContext *ctx) {
 
 double player_get_audio_clock(PlayerContext *ctx) {
   if (ctx->audio_dev == 0 || !ctx->sdl_stream || ctx->last_audio_pts < 0.0) return -1.0;
-
   int queued = SDL_GetAudioStreamQueued(ctx->sdl_stream);
+
+  if (queued <= 0 && !ctx->paused) {
+    double now = get_monotonic_time();
+    if (ctx->audio_starve_since == 0.0) ctx->audio_starve_since = now;
+    if (now - ctx->audio_starve_since > 0.25) return -1.0;
+  } else {
+    ctx->audio_starve_since = 0.0;
+  }
+
   if (ctx->bytes_per_sec > 0) {
     double delay = (double)queued / ctx->bytes_per_sec;
     delay += ctx->audio_hw_delay;
@@ -47,7 +55,8 @@ int player_init_audio(PlayerContext *ctx) {
   SDL_zero(wanted_spec);
   wanted_spec.freq = ctx->a_codec_ctx->sample_rate;
   wanted_spec.format = SDL_AUDIO_S16;
-  wanted_spec.channels = input_channels;
+  wanted_spec.channels = input_channels > 2 ? 2 : input_channels;
+  ctx->out_freq = wanted_spec.freq;
 
   ctx->audio_dev = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &wanted_spec);
   if (ctx->audio_dev == 0) goto fail;
@@ -75,11 +84,16 @@ int player_init_audio(PlayerContext *ctx) {
   AVChannelLayout out_ch_layout;
   av_channel_layout_default(&out_ch_layout, ctx->output_channels);
 
+  AVChannelLayout in_layout;
+  av_channel_layout_copy(&in_layout, &ctx->a_codec_ctx->ch_layout);
+  if (in_layout.order == AV_CHANNEL_ORDER_UNSPEC) av_channel_layout_default(&in_layout, in_layout.nb_channels);
+
   int swr_ret = swr_alloc_set_opts2(&ctx->swr_ctx, &out_ch_layout, AV_SAMPLE_FMT_S16,
                                     wanted_spec.freq,
-                                    &ctx->a_codec_ctx->ch_layout, ctx->a_codec_ctx->sample_fmt,
+                                    &in_layout, ctx->a_codec_ctx->sample_fmt,
                                     ctx->a_codec_ctx->sample_rate, 0, NULL);
   av_channel_layout_uninit(&out_ch_layout);
+  av_channel_layout_uninit(&in_layout);
 
   if (swr_ret < 0 || !ctx->swr_ctx || swr_init(ctx->swr_ctx) < 0) goto fail;
 
@@ -115,7 +129,7 @@ void player_receive_audio_frames(PlayerContext *ctx) {
       }
     }
 
-    int out_samples = av_rescale_rnd(swr_get_delay(ctx->swr_ctx, ctx->a_codec_ctx->sample_rate) + ctx->frame_audio->nb_samples, ctx->audio_spec.freq, ctx->a_codec_ctx->sample_rate, AV_ROUND_UP);
+    int out_samples = av_rescale_rnd(swr_get_delay(ctx->swr_ctx, ctx->a_codec_ctx->sample_rate) + ctx->frame_audio->nb_samples, ctx->out_freq, ctx->a_codec_ctx->sample_rate, AV_ROUND_UP);
     if (out_samples <= 0) {
       av_frame_unref(ctx->frame_audio);
       continue;

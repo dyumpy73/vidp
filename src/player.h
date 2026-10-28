@@ -70,8 +70,10 @@ typedef struct {
   unsigned int audio_out_buffer_size;
   int output_channels;
   int bytes_per_sec;
+  int out_freq;                /* swr output rate (= wanted_spec.freq) */
   float volume;
   double audio_hw_delay;
+  double audio_starve_since;   /* when the audio queue became empty; 0 = not empty */
 
   ASS_Library *ass_library;
   ASS_Renderer *ass_renderer;
@@ -104,6 +106,7 @@ typedef struct {
   int hw_transfer_failures;
   int subtitle_visible;
   uint32_t current_tex_format;
+  uint32_t tex_cs;
   int tex_w;
   int tex_h;
 
