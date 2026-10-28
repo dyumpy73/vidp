@@ -139,6 +139,10 @@ void trim_memory(void);
 int is_media_file(const char *filename);
 int compare_strings(const void *a, const void *b);
 SDL_Cursor* create_blank_cursor(void);
+void ui_set_font(TTF_Font *font);
+void ui_clear_cache(void);
+void ui_text_left(SDL_Renderer *r, const char *text, SDL_Color c, int x, int y);
+void ui_text_center(SDL_Renderer *r, const char *text, SDL_Color c, int cx, int y);
 
 /* ---- playlist.c ---- */
 void build_playlist(int argc, char *argv[], char ***playlist, int *count);

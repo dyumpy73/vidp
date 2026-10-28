@@ -1,6 +1,12 @@
 #include "player.h"
 #include <ctype.h>
 
+#define TC_N 96
+typedef struct { char *text; SDL_Color c; SDL_Texture *t; int w, h; unsigned long used; } TextEnt;
+static TextEnt g_tc[TC_N];
+static unsigned long g_tc_tick = 0;
+static TTF_Font *g_ui_font = NULL;
+
 double get_monotonic_time(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -59,4 +65,60 @@ SDL_Cursor* create_blank_cursor(void) {
   SDL_Cursor *cursor = SDL_CreateColorCursor(surf, 0, 0);
   SDL_DestroySurface(surf);
   return cursor;
+}
+
+void ui_set_font(TTF_Font *font) { g_ui_font = font; }
+
+void ui_clear_cache(void) {
+  for (int i = 0; i < TC_N; i++) {
+    if (g_tc[i].t) SDL_DestroyTexture(g_tc[i].t);
+    free(g_tc[i].text);
+    memset(&g_tc[i], 0, sizeof(g_tc[i]));
+  }
+}
+
+static TextEnt *text_cache_get(SDL_Renderer *r, const char *text, SDL_Color c) {
+  if (!g_ui_font) return NULL;
+  for (int i = 0; i < TC_N; i++) {
+    TextEnt *e = &g_tc[i];
+    if (e->t && e->text && !strcmp(e->text, text) &&
+        e->c.r == c.r && e->c.g == c.g && e->c.b == c.b && e->c.a == c.a) {
+      e->used = ++g_tc_tick;
+      return e;
+    }
+  }
+  int victim = 0;
+  for (int i = 0; i < TC_N; i++) {
+    if (!g_tc[i].t) { victim = i; break; }
+    if (g_tc[i].used < g_tc[victim].used) victim = i;
+  }
+  TextEnt *e = &g_tc[victim];
+  if (e->t) SDL_DestroyTexture(e->t);
+  free(e->text);
+  memset(e, 0, sizeof(*e));
+
+  SDL_Surface *s = TTF_RenderText_Blended(g_ui_font, text, 0, c);
+  if (!s) return NULL;
+  e->t = SDL_CreateTextureFromSurface(r, s);
+  e->w = s->w; e->h = s->h;
+  SDL_DestroySurface(s);
+  e->text = strdup(text);
+  if (!e->t || !e->text) { ui_clear_cache(); return NULL; }
+  e->c = c;
+  e->used = ++g_tc_tick;
+  return e;
+}
+
+void ui_text_left(SDL_Renderer *r, const char *text, SDL_Color c, int x, int y) {
+  TextEnt *e = text_cache_get(r, text, c);
+  if (!e) return;
+  SDL_FRect dst = { (float)x, (float)y, (float)e->w, (float)e->h };
+  SDL_RenderTexture(r, e->t, NULL, &dst);
+}
+
+void ui_text_center(SDL_Renderer *r, const char *text, SDL_Color c, int cx, int y) {
+  TextEnt *e = text_cache_get(r, text, c);
+  if (!e) return;
+  SDL_FRect dst = { (float)(cx - e->w / 2), (float)y, (float)e->w, (float)e->h };
+  SDL_RenderTexture(r, e->t, NULL, &dst);
 }
