@@ -63,9 +63,9 @@ static int idle_init_ttf(void) {
 }
 
 static void idle_cleanup_ttf(void) {
+  ui_set_font(NULL);
   if (g_font) { TTF_CloseFont(g_font); g_font = NULL; }
   if (g_ttf_ready) { TTF_Quit(); g_ttf_ready = 0; }
-  ui_clear_cache();
 }
 
 static void truncate_left(const char *in, char *out, size_t out_sz, int max_px) {
@@ -506,7 +506,6 @@ int player_idle_run(char ***out_playlist, int *out_count) {
         }
       }
       else if (e.type == SDL_EVENT_DROP_COMPLETE) {
-        /* [S6b] all dropped files have arrived */
         if (*out_count > 0) got_files = 1;
       }
       else if (e.type == SDL_EVENT_KEY_DOWN) {
@@ -543,6 +542,7 @@ int player_idle_run(char ***out_playlist, int *out_count) {
     SDL_Delay(16);
   }
 
+  ui_clear_cache();
   SDL_DestroyRenderer(ren);
   SDL_DestroyWindow(win);
   idle_cleanup_ttf();

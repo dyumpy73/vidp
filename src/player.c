@@ -288,9 +288,6 @@ void player_compute_dest_rect(PlayerContext *ctx, SDL_FRect *dest_rect) {
 void player_present_frame(PlayerContext *ctx) {
   if (!ctx->texture) return;
 
-  int win_w = 0, win_h = 0;
-  SDL_GetWindowSize(ctx->window, &win_w, &win_h);
-
   SDL_FRect dest_rect;
   player_compute_dest_rect(ctx, &dest_rect);
   SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_NONE);

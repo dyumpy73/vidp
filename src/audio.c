@@ -84,7 +84,7 @@ int player_init_audio(PlayerContext *ctx) {
   AVChannelLayout out_ch_layout;
   av_channel_layout_default(&out_ch_layout, ctx->output_channels);
 
-  AVChannelLayout in_layout;
+  AVChannelLayout in_layout = {0};
   av_channel_layout_copy(&in_layout, &ctx->a_codec_ctx->ch_layout);
   if (in_layout.order == AV_CHANNEL_ORDER_UNSPEC) av_channel_layout_default(&in_layout, in_layout.nb_channels);
 
