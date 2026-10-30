@@ -54,6 +54,7 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
   ctx->consecutive_drops = 0;
   ctx->sub_has_pixels = 0;
   ctx->audio_starve_since = 0.0;
+  if (ctx->last_rendered_frame) av_frame_unref(ctx->last_rendered_frame);
 
   if (ctx->audio_dev > 0) {
     if (ctx->paused) SDL_PauseAudioDevice(ctx->audio_dev);
@@ -186,13 +187,16 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index, int to
     }
   }
 
-  if (!player_init_audio(ctx)) fprintf(stderr, "[VidP] Audio init failed, continuing without audio.\n");
+  if (ctx->audio_stream >= 0) {
+    if (!player_init_audio(ctx)) fprintf(stderr, "[VidP] Audio init failed, continuing without audio.\n");
+  };
   player_init_subtitles(ctx);
 
   ctx->frame_video = av_frame_alloc();
   ctx->frame_audio = av_frame_alloc();
+  ctx->last_rendered_frame = av_frame_alloc();
   ctx->packet = av_packet_alloc();
-  if (!ctx->frame_video || !ctx->frame_audio || !ctx->packet) return 0;
+  if (!ctx->frame_video || !ctx->frame_audio || !ctx->packet || !ctx->last_rendered_frame) return 0;
 
   const char *base = strrchr(filepath, '/');
   base = base ? base + 1 : filepath;
@@ -225,6 +229,7 @@ void player_close_file(PlayerContext *ctx) {
 
   if (ctx->frame_video) av_frame_free(&ctx->frame_video);
   if (ctx->frame_audio) av_frame_free(&ctx->frame_audio);
+  if (ctx->last_rendered_frame) av_frame_free(&ctx->last_rendered_frame);
   if (ctx->packet) av_packet_free(&ctx->packet);
 
   if (ctx->v_codec_ctx) avcodec_free_context(&ctx->v_codec_ctx);
@@ -333,7 +338,13 @@ void player_handle_events(PlayerContext *ctx, int *global_quit, int *playlist_in
     if (event.type == SDL_EVENT_WINDOW_MOUSE_ENTER || event.type == SDL_EVENT_WINDOW_FOCUS_GAINED || event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_EXPOSED) {
       ctx->last_mouse_move = SDL_GetTicks();
       if (ctx->cursor_hidden) { SDL_SetCursor(SDL_GetDefaultCursor()); ctx->cursor_hidden = 0; }
-      if (ctx->paused && ctx->has_last_frame && ctx->texture) player_present_frame(ctx);
+      if (ctx->paused) {
+        if (ctx->last_rendered_frame && ctx->last_rendered_frame->width > 0) {
+          player_render_current_frame(ctx, ctx->last_rendered_frame);
+        } else if (ctx->has_last_frame && ctx->texture) {
+          player_present_frame(ctx);
+        }
+      }
     }
 
     if (event.type == SDL_EVENT_KEY_DOWN) {

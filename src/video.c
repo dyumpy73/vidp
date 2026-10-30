@@ -348,14 +348,14 @@ void player_receive_video_frames(PlayerContext *ctx) {
       ctx->consecutive_drops = 0;
 
       if (delay > AV_SYNC_DELAY_THRESHOLD) {
-        int has_audio = audio_clock >= 0.0 &&
-                        ctx->audio_dev > 0 && ctx->sdl_stream && ctx->bytes_per_sec > 0;
+        int has_audio = audio_clock >= 0.0 && ctx->audio_dev > 0 && ctx->sdl_stream && ctx->bytes_per_sec > 0;
+        
         if (has_audio) {
           int queued = SDL_GetAudioStreamQueued(ctx->sdl_stream);
           double queued_sec = (queued > 0) ? (double)queued / ctx->bytes_per_sec : 0.0;
-
-          if (queued_sec < 0.1) delay = 0.0;
-          else if (delay > queued_sec) delay = queued_sec;
+          double budget = queued_sec + ctx->audio_hw_delay - 0.03;
+          if (budget < 0.0) budget = 0.0;
+          if (delay > budget) delay = budget;
         }
 
         if (delay > 0.0) {
@@ -369,6 +369,11 @@ void player_receive_video_frames(PlayerContext *ctx) {
           }
         }
       }
+    }
+
+    if (ctx->last_rendered_frame) {
+      av_frame_unref(ctx->last_rendered_frame);
+      av_frame_ref(ctx->last_rendered_frame, render_frame);
     }
 
     player_render_current_frame(ctx, render_frame);
@@ -385,6 +390,9 @@ void player_process_video_packet(PlayerContext *ctx) {
     player_receive_video_frames(ctx);
     ret = avcodec_send_packet(ctx->v_codec_ctx, ctx->packet);
   }
-  if (ret < 0 && ret != AVERROR_EOF) return;
+  if (ret < 0 && ret != AVERROR_EOF) {
+    fprintf(stderr, "[VidP] Decode error: %d\n", ret);
+    return;
+  }
   player_receive_video_frames(ctx);
 }

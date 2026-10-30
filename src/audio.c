@@ -164,6 +164,10 @@ void player_process_audio_packet(PlayerContext *ctx) {
     player_receive_audio_frames(ctx);
     ret = avcodec_send_packet(ctx->a_codec_ctx, ctx->packet);
   }
-  if (ret < 0 && ret != AVERROR_EOF) return;
+  
+  if (ret < 0 && ret != AVERROR_EOF) {
+    fprintf(stderr, "[VidP] Decode error: %d\n", ret);
+    return;
+  }
   player_receive_audio_frames(ctx);
 }

@@ -61,6 +61,7 @@ typedef struct {
   AVFrame *frame_video;
   AVFrame *frame_audio;
   AVFrame *frame_yuv;
+  AVFrame *last_rendered_frame;
   AVPacket *packet;
 
   SDL_AudioStream *sdl_stream;

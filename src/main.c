@@ -15,7 +15,7 @@ int main(int argc, char *argv[]) {
   if (!SDL_Init(SDL_INIT_VIDEO)) {
     fprintf(stderr, "[VidP] Failed to initialize SDL VIDEO: %s\n", SDL_GetError());
     free_playlist(playlist, playlist_count);
-    return -1;
+    return EXIT_FAILURE;
   }
 
   if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
