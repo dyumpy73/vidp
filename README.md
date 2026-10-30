@@ -33,7 +33,7 @@ A small video player written in C, built on **FFmpeg**, **SDL3**, and **libass**
 - `src/subtitle.c`  — libass integration
 - `src/playlist.c`  — folder scanning, playlist building
 - `src/idle.c`      — idle screen + file picker
-- `src/utils.c`     — small utilities (clock, natural sort, media file check, blank cursor)
+- `src/utils.c`     — small utilities (clock, natural sort, media file check, UI text cache)
 - `src/player.h`    — shared types, tunables and declarations
 - `assets/vidp.desktop` — launcher entry (installed by `make install`)
 - `assets/icon.svg`     — application icon (installed by `make install`)
@@ -67,7 +67,7 @@ sudo apt install gcc pkg-config libavcodec-dev libavformat-dev libavutil-dev \
 ### Debian/Ubuntu:
 ```bash
 wget https://github.com/dyumpy73/vidp/releases/latest/download/vidp_0.0.1_amd64.deb
-sudo dpkg -i vidp_0.0.1_amd64.deb && sudo apt install -f
+sudo dpkg -i vidp_0.0.3_amd64.deb && sudo apt install -f
 ```
 
 ### Any Linux (portable):
