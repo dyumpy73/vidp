@@ -65,7 +65,12 @@ void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_FRect *dest_rect
   }
 
   if (!rebuild) {
-    if (ctx->sub_has_pixels) SDL_RenderTexture(ctx->renderer, ctx->sub_tex, NULL, dest_rect);
+    if (ctx->sub_has_pixels) {
+      SDL_RenderTexture(ctx->renderer, ctx->sub_tex, NULL, dest_rect);
+    } else {
+      if (ctx->sub_tex) { SDL_DestroyTexture(ctx->sub_tex); ctx->sub_tex = NULL; }
+      if (ctx->sub_surf) { SDL_DestroySurface(ctx->sub_surf); ctx->sub_surf = NULL; }
+    }
     return;
   }
 
@@ -171,7 +176,7 @@ void player_init_subtitles(PlayerContext *ctx) {
   ass_set_shaper(ctx->ass_renderer, ASS_SHAPING_COMPLEX);
   ass_set_fonts(ctx->ass_renderer, NULL, "Sans",
                 ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
-  ass_set_cache_limits(ctx->ass_renderer, 20, 20);
+  ass_set_cache_limits(ctx->ass_renderer, 1000, 64);
 
   for (int i = 0; i < ctx->subtitle_stream_count; i++) {
     ctx->ass_tracks[i] = ass_new_track(ctx->ass_library);

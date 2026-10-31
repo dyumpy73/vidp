@@ -44,6 +44,11 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
   player_reset_audio_buffer(ctx);
   if (ctx->swr_ctx) { swr_close(ctx->swr_ctx); swr_init(ctx->swr_ctx); }
 
+  if (ctx->audio_out_buffer) { 
+    av_freep(&ctx->audio_out_buffer); 
+    ctx->audio_out_buffer_size = 0; 
+  }
+
   ctx->video_clock_started = 0;
   ctx->first_video_time = 0.0;
   ctx->playback_start_wall = 0.0;
@@ -61,6 +66,7 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
     else SDL_ResumeAudioDevice(ctx->audio_dev);
   } 
   if (ctx->paused) ctx->step_pending = 1;
+  trim_memory();
 }
 
 int player_open_file(PlayerContext *ctx, const char *filepath, int index, int total) {
@@ -263,7 +269,12 @@ void player_sleep_pumping(PlayerContext *ctx, double seconds) {
     }
     double remain = target - get_monotonic_time();
     if (remain <= 0.0) break;
-    SDL_Delay(remain > 0.005 ? 5 : 1);
+    if (remain >= 0.002) {
+      SDL_Delay(1);
+    } else {
+      while(get_monotonic_time() < target) {}
+      break;
+    }
   }
 }
 

@@ -282,6 +282,15 @@ static int should_stop_video(PlayerContext *ctx) {
   return 0;
 }
 
+static double audio_margin(void) {
+  static double m = -1.0;
+  if (m < 0.0) { 
+      const char *e = getenv("VIDP_AUDIO_MARGIN_MS"); 
+      m = e ? atof(e) / 1000.0 : 0.06;
+  }
+  return m;
+}
+
 void player_receive_video_frames(PlayerContext *ctx) {
   if (!ctx->v_codec_ctx) return;
   while (!should_stop_video(ctx) && avcodec_receive_frame(ctx->v_codec_ctx, ctx->frame_video) == 0) {
@@ -353,7 +362,7 @@ void player_receive_video_frames(PlayerContext *ctx) {
         if (has_audio) {
           int queued = SDL_GetAudioStreamQueued(ctx->sdl_stream);
           double queued_sec = (queued > 0) ? (double)queued / ctx->bytes_per_sec : 0.0;
-          double budget = queued_sec + ctx->audio_hw_delay - 0.03;
+          double budget = queued_sec + ctx->audio_hw_delay - audio_margin();
           if (budget < 0.0) budget = 0.0;
           if (delay > budget) delay = budget;
         }
@@ -380,6 +389,12 @@ void player_receive_video_frames(PlayerContext *ctx) {
     ctx->step_pending = 0;
     av_frame_unref(ctx->frame_video);
     if (sw_frame) av_frame_free(&sw_frame);
+
+    static int trim_counter = 0;
+    if (++trim_counter >= 1000) {
+      trim_memory();
+      trim_counter = 0;
+    }
   }
 }
 
