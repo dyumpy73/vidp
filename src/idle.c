@@ -45,7 +45,7 @@ static const char *find_font_fc(void) {
   return n ? g_fc_font : NULL;
 }
 
-static int idle_init_ttf(void) {
+int player_init_font(void) {
   if (g_ttf_ready) return 1;
   if (!TTF_Init()) {
     fprintf(stderr, "[VidP] TTF_Init failed: %s\n", SDL_GetError());
@@ -62,7 +62,7 @@ static int idle_init_ttf(void) {
   return 1;
 }
 
-static void idle_cleanup_ttf(void) {
+void player_cleanup_font(void) {
   ui_set_font(NULL);
   if (g_font) { TTF_CloseFont(g_font); g_font = NULL; }
   if (g_ttf_ready) { TTF_Quit(); g_ttf_ready = 0; }
@@ -104,6 +104,44 @@ typedef struct {
   int        op_select;
 } Picker;
 
+/* Permanents survive folder navigation within the picker session.
+   Insertion order is preserved; removal uses memmove. */
+static char **g_permanent_paths = NULL;
+static int    g_permanent_count = 0;
+
+static int picker_is_permanent(const char *path) {
+  for (int i = 0; i < g_permanent_count; i++)
+    if (strcmp(g_permanent_paths[i], path) == 0) return 1;
+  return 0;
+}
+
+static void picker_set_permanent(const char *path, int perm) {
+  int found = -1;
+  for (int i = 0; i < g_permanent_count; i++)
+    if (strcmp(g_permanent_paths[i], path) == 0) { found = i; break; }
+
+  if (perm && found < 0) {
+    char **np = realloc(g_permanent_paths, (g_permanent_count + 1) * sizeof(char *));
+    if (!np) return;
+    g_permanent_paths = np;
+    char *dup = strdup(path);
+    if (!dup) return;
+    g_permanent_paths[g_permanent_count++] = dup;
+  } else if (!perm && found >= 0) {
+    free(g_permanent_paths[found]);
+    memmove(&g_permanent_paths[found], &g_permanent_paths[found + 1],
+            (size_t)(g_permanent_count - found - 1) * sizeof(char *));
+    g_permanent_count--;
+  }
+}
+
+static void picker_free_permanents(void) {
+  for (int i = 0; i < g_permanent_count; i++) free(g_permanent_paths[i]);
+  free(g_permanent_paths);
+  g_permanent_paths = NULL;
+  g_permanent_count = 0;
+}
+
 static int cmp_entry(const void *a, const void *b) {
   const PickEntry *ea = a, *eb = b;
   if (ea->is_dir != eb->is_dir) return eb->is_dir - ea->is_dir;
@@ -141,6 +179,8 @@ static void picker_apply_range(Picker *p) {
 static void picker_commit(Picker *p) {
   for (int i = 0; i < p->count; i++) {
     p->entries[i].permanent = p->entries[i].selected;
+    if (!p->entries[i].is_dir)
+      picker_set_permanent(p->entries[i].path, p->entries[i].selected);
   }
   p->space_held = 0;
   p->anchor = -1;
@@ -170,17 +210,23 @@ static int picker_load(Picker *p, const char *dir) {
     if (stat(full, &st) != 0) continue;
     int is_dir = S_ISDIR(st.st_mode);
     if (!is_dir && !is_media_file(de->d_name)) continue;
+
+    char *pdup = strdup(full);
+    char *ndup = strdup(de->d_name);
+    if (!pdup || !ndup) { free(pdup); free(ndup); continue; }
+
     if (p->count >= p->cap) {
-      p->cap = p->cap ? p->cap * 2 : 32;
-      PickEntry *ne = realloc(p->entries, p->cap * sizeof(PickEntry));
-      if (!ne) break;
+      int new_cap = p->cap ? p->cap * 2 : 32;
+      PickEntry *ne = realloc(p->entries, (size_t)new_cap * sizeof(PickEntry));
+      if (!ne) { free(pdup); free(ndup); break; }
       p->entries = ne;
+      p->cap = new_cap;
     }
-    p->entries[p->count].path = strdup(full);
-    p->entries[p->count].name = strdup(de->d_name);
-    p->entries[p->count].is_dir = is_dir;
-    p->entries[p->count].selected = 0;
-    p->entries[p->count].permanent = 0;
+    p->entries[p->count].path      = pdup;
+    p->entries[p->count].name      = ndup;
+    p->entries[p->count].is_dir    = is_dir;
+    p->entries[p->count].permanent = is_dir ? 0 : picker_is_permanent(full);
+    p->entries[p->count].selected  = p->entries[p->count].permanent;
     p->count++;
   }
   closedir(d);
@@ -233,9 +279,7 @@ static void picker_draw(SDL_Renderer *ren, Picker *p, int ww, int wh) {
     } else {
       const char *mark = "  ";
       SDL_Color col = dim;
-      if (e->selected) {
-        mark = "* "; col = white;
-      }
+      if (e->selected) { mark = "* "; col = white; }
       snprintf(line, sizeof(line), "%s%s", mark, e->name);
       ui_text_left(ren, line, col, 32, y);
     }
@@ -252,9 +296,7 @@ static void picker_draw(SDL_Renderer *ren, Picker *p, int ww, int wh) {
   }
 
   int nsel = 0;
-  for (int i = 0; i < p->count; i++) {
-    if (p->entries[i].selected) nsel++;
-  }
+  for (int i = 0; i < p->count; i++) if (p->entries[i].selected) nsel++;
 
   char footer[256];
   if (p->space_held) {
@@ -354,14 +396,13 @@ static int picker_run(SDL_Window *win, SDL_Renderer *ren, char ***out_files, int
           picker_commit(&p);
           int all_perm = 1;
           for (int i = 0; i < p.count; i++) {
-            if (!p.entries[i].is_dir && !p.entries[i].permanent) {
-              all_perm = 0; break;
-            }
+            if (!p.entries[i].is_dir && !p.entries[i].permanent) { all_perm = 0; break; }
           }
           for (int i = 0; i < p.count; i++) {
             if (!p.entries[i].is_dir) {
               p.entries[i].permanent = !all_perm;
-              p.entries[i].selected = !all_perm;
+              p.entries[i].selected  = !all_perm;
+              picker_set_permanent(p.entries[i].path, !all_perm);
             }
           }
           p.space_held = 0;
@@ -399,22 +440,37 @@ static int picker_run(SDL_Window *win, SDL_Renderer *ren, char ***out_files, int
             snprintf(newpath, sizeof(newpath), "%s", cur->path);
             picker_load(&p, newpath);
           } else {
-            int nsel = 0;
-            for (int i = 0; i < p.count; i++) if (p.entries[i].selected) nsel++;
-            if (nsel > 0) {
-              *out_files = malloc(nsel * sizeof(char *));
-              int k2 = 0;
-              for (int i = 0; i < p.count; i++)
-                if (p.entries[i].selected)
-                  (*out_files)[k2++] = strdup(p.entries[i].path);
-              *out_count = nsel;
+            /* Sync any in-flight space selection into the permanents set
+               before we build the output. */
+            picker_commit(&p);
+
+            if (g_permanent_count > 0) {
+              /* Cross-folder selection: play every permanently-selected
+                 file regardless of which folder it lives in. */
+              *out_files = malloc((size_t)g_permanent_count * sizeof(char *));
+              if (*out_files) {
+                int k2 = 0;
+                for (int i = 0; i < g_permanent_count; i++) {
+                  char *dup = strdup(g_permanent_paths[i]);
+                  if (dup) (*out_files)[k2++] = dup;
+                }
+                *out_count = k2;
+              }
+              if (*out_count == 0) { free(*out_files); *out_files = NULL; }
             } else {
+              /* Nothing selected anywhere: play the cursor file. */
               *out_files = malloc(sizeof(char *));
-              (*out_files)[0] = strdup(cur->path);
-              *out_count = 1;
+              if (*out_files) {
+                (*out_files)[0] = strdup(cur->path);
+                *out_count = (*out_files)[0] ? 1 : 0;
+                if (*out_count == 0) { free(*out_files); *out_files = NULL; }
+              }
             }
-            confirmed = 1;
-            done = 1;
+
+            if (*out_count > 0) {
+              confirmed = 1;
+              done = 1;
+            }
           }
         }
       }
@@ -433,6 +489,7 @@ static int picker_run(SDL_Window *win, SDL_Renderer *ren, char ***out_files, int
   }
 
   picker_free(&p);
+  picker_free_permanents();
   return confirmed;
 }
 
@@ -460,7 +517,7 @@ static void clean_drop_path(const char *raw, char *out, size_t out_sz) {
   char decoded[PATH_MAX];
   if (is_uri) url_decode(p, decoded, sizeof(decoded));
   else snprintf(decoded, sizeof(decoded), "%s", p);
-  
+
   size_t plen = strlen(decoded);
   while (plen > 0 && (decoded[plen - 1] == '\n' || decoded[plen - 1] == '\r')) {
     decoded[--plen] = '\0';
@@ -472,14 +529,12 @@ int player_idle_run(char ***out_playlist, int *out_count) {
   *out_playlist = NULL;
   *out_count = 0;
 
-  idle_init_ttf();
-
   SDL_Window *win = SDL_CreateWindow("VidP", 900, 600,
       SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
-  if (!win) { idle_cleanup_ttf(); return 0; }
+  if (!win) return 0;
 
   SDL_Renderer *ren = SDL_CreateRenderer(win, NULL);
-  if (!ren) { SDL_DestroyWindow(win); idle_cleanup_ttf(); return 0; }
+  if (!ren) { SDL_DestroyWindow(win); return 0; }
 
   SDL_ShowWindow(win);
 
@@ -521,7 +576,7 @@ int player_idle_run(char ***out_playlist, int *out_count) {
       }
     }
 
-    if (!got_files && from_drop && *out_count > 0 && SDL_GetTicks() - last_drop > 200)
+    if (!got_files && from_drop && *out_count > 0 && SDL_GetTicks() - last_drop > 500)
       got_files = 1;
     if (got_files && from_drop && *out_count > 1)
       qsort(*out_playlist, (size_t)*out_count, sizeof(char *), compare_strings);
@@ -545,7 +600,6 @@ int player_idle_run(char ***out_playlist, int *out_count) {
   ui_clear_cache();
   SDL_DestroyRenderer(ren);
   SDL_DestroyWindow(win);
-  idle_cleanup_ttf();
 
   return got_files;
 }

@@ -204,10 +204,7 @@ void player_process_subtitle_packet(PlayerContext *ctx) {
 
   int sub_idx = -1;
   for (int i = 0; i < ctx->subtitle_stream_count; i++) {
-    if (ctx->subtitle_streams[i] == pkt_stream) {
-      sub_idx = i;
-      break;
-    }
+    if (ctx->subtitle_streams[i] == pkt_stream) { sub_idx = i; break; }
   }
   if (sub_idx < 0) return;
   if (!ctx->ass_tracks[sub_idx]) return;
@@ -224,6 +221,11 @@ void player_process_subtitle_packet(PlayerContext *ctx) {
   int64_t dur_ms   = (int64_t)(duration_sub * 1000);
   if (dur_ms <= 0) dur_ms = 5000;
 
+  if (ctx->last_video_time >= 0.0) {
+    double sub_end = sub_pts + duration_sub;
+    if (sub_end < ctx->last_video_time - 1.0) return;
+  }
+
   int size = ctx->packet->size;
   if (size + 1 > ctx->sub_tmp_cap) {
     int new_cap = size + 256;
@@ -239,15 +241,8 @@ void player_process_subtitle_packet(PlayerContext *ctx) {
 }
 
 void player_reset_subtitle_state(PlayerContext *ctx) {
-  if (ctx->sub_surf) {
-    SDL_DestroySurface(ctx->sub_surf);
-    ctx->sub_surf = NULL;
-  }
-  if (ctx->sub_tex) {
-    SDL_DestroyTexture(ctx->sub_tex);
-    ctx->sub_tex = NULL;
-  }
-
+  if (ctx->sub_surf) { SDL_DestroySurface(ctx->sub_surf); ctx->sub_surf = NULL; }
+  if (ctx->sub_tex)  { SDL_DestroyTexture(ctx->sub_tex);  ctx->sub_tex  = NULL; }
   ctx->sub_has_pixels = 0;
   player_update_ass_storage(ctx);
 }
@@ -269,7 +264,7 @@ void player_switch_subtitle(PlayerContext *ctx) {
   } else {
     ctx->subtitle_stream = ctx->subtitle_streams[ctx->current_subtitle_idx];
     ctx->ass_track = ctx->ass_tracks[ctx->current_subtitle_idx];
-    printf("[VidP] Switched to Subtitle stream index: %d (Total available: %d)\n", ctx->current_subtitle_idx + 1, ctx->subtitle_stream_count);
+    printf("[VidP] Switched to Subtitle stream index: %d (Total available: %d)\n",
+           ctx->current_subtitle_idx + 1, ctx->subtitle_stream_count);
   }
 }
-

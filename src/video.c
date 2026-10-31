@@ -18,6 +18,35 @@ enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *
   return pix_fmts[0];
 }
 
+int player_init_sw_video(PlayerContext *ctx) {
+  if (!ctx->fmt_ctx || ctx->video_stream < 0) return 0;
+  AVCodecParameters *v_par = ctx->fmt_ctx->streams[ctx->video_stream]->codecpar;
+  const AVCodec *v_codec = avcodec_find_decoder(v_par->codec_id);
+  if (!v_codec) return 0;
+
+  if (ctx->v_codec_ctx) avcodec_free_context(&ctx->v_codec_ctx);
+  if (ctx->hw_device_ctx) { av_buffer_unref(&ctx->hw_device_ctx); ctx->hw_device_ctx = NULL; }
+  ctx->is_hw_accel = 0;
+  ctx->hw_pix_fmt = AV_PIX_FMT_NONE;
+  ctx->hw_transfer_failures = 0;
+
+  ctx->v_codec_ctx = avcodec_alloc_context3(v_codec);
+  if (!ctx->v_codec_ctx) return 0;
+  if (avcodec_parameters_to_context(ctx->v_codec_ctx, v_par) < 0) {
+    avcodec_free_context(&ctx->v_codec_ctx);
+    return 0;
+  }
+  ctx->v_codec_ctx->thread_count = 0;
+  ctx->v_codec_ctx->thread_type  = FF_THREAD_FRAME | FF_THREAD_SLICE;
+  ctx->v_codec_ctx->opaque       = ctx;
+
+  if (avcodec_open2(ctx->v_codec_ctx, v_codec, NULL) < 0) {
+    avcodec_free_context(&ctx->v_codec_ctx);
+    return 0;
+  }
+  return 1;
+}
+
 int player_init_display(PlayerContext *ctx, const char *title) {
   double disp_w = (double)ctx->width * ctx->sar_ratio;
   double disp_h = (double)ctx->height;
@@ -39,26 +68,20 @@ int player_init_display(PlayerContext *ctx, const char *title) {
     if (!ctx->window) return 0;
   } else {
     SDL_SetWindowTitle(ctx->window, title);
-    
+
     SDL_WindowFlags flags = SDL_GetWindowFlags(ctx->window);
-    int is_maximized = (flags & SDL_WINDOW_MAXIMIZED) != 0;
+    int is_maximized  = (flags & SDL_WINDOW_MAXIMIZED) != 0;
     int is_fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
 
-    int is_tiling_wm = (getenv("SWAYSOCK") != NULL) || 
-                       (getenv("HYPRLAND_INSTANCE_SIGNATURE") != NULL) || 
+    int is_tiling_wm = (getenv("SWAYSOCK") != NULL) ||
+                       (getenv("HYPRLAND_INSTANCE_SIGNATURE") != NULL) ||
                        (getenv("NIRI_SOCKET") != NULL);
 
     if (!is_tiling_wm && !is_maximized && !is_fullscreen) {
       SDL_SetWindowSize(ctx->window, win_w, win_h);
     }
   }
-  const char *drivers[] = { 
-    "opengl",
-    "opengles2",
-    "vulkan",
-    "software",
-    NULL 
-  };
+  const char *drivers[] = { "opengl", "opengles2", "vulkan", "software", NULL };
 
   for (int i = 0; ctx->renderer == NULL && drivers[i] != NULL; i++) {
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, drivers[i]);
@@ -81,9 +104,7 @@ int player_init_display(PlayerContext *ctx, const char *title) {
   if (SDL_GetWindowFlags(ctx->window) & SDL_WINDOW_HIDDEN) SDL_ShowWindow(ctx->window);
   ctx->texture = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_IYUV,
                                    SDL_TEXTUREACCESS_STREAMING, ctx->width, ctx->height);
-  if (ctx->texture) {
-    SDL_SetTextureScaleMode(ctx->texture, SDL_SCALEMODE_LINEAR);
-  }
+  if (ctx->texture) SDL_SetTextureScaleMode(ctx->texture, SDL_SCALEMODE_LINEAR);
   return ctx->texture != NULL;
 }
 
@@ -98,12 +119,12 @@ void player_check_dynamic_resolution(PlayerContext *ctx, AVFrame *render_frame) 
   ctx->height = render_frame->height;
 
   if (ctx->frame_yuv) { av_frame_free(&ctx->frame_yuv); ctx->frame_yuv = NULL; }
-  if (ctx->sws_ctx) { sws_freeContext(ctx->sws_ctx); ctx->sws_ctx = NULL; }
-  if (ctx->texture) { SDL_DestroyTexture(ctx->texture); ctx->texture = NULL; }
-  
+  if (ctx->sws_ctx)   { sws_freeContext(ctx->sws_ctx); ctx->sws_ctx = NULL; }
+  if (ctx->texture)   { SDL_DestroyTexture(ctx->texture); ctx->texture = NULL; }
+
   ctx->current_tex_format = 0;
   if (ctx->sub_surf) { SDL_DestroySurface(ctx->sub_surf); ctx->sub_surf = NULL; }
-  if (ctx->sub_tex) { SDL_DestroyTexture(ctx->sub_tex); ctx->sub_tex = NULL; }
+  if (ctx->sub_tex)  { SDL_DestroyTexture(ctx->sub_tex);  ctx->sub_tex  = NULL; }
 
   player_update_ass_storage(ctx);
 }
@@ -133,8 +154,7 @@ static void player_pick_texture_size(PlayerContext *ctx, int *tw, int *th) {
   if (h < 2) h = 2;
   if (w >= ctx->width || h >= ctx->height) return;
 
-  if (ctx->texture && ctx->tex_w > 0 && ctx->tex_w < ctx->width &&
-      ctx->tex_h < ctx->height && abs(w - ctx->tex_w) * 10 <= ctx->tex_w) {
+  if (ctx->texture && ctx->tex_w > 0 && ctx->tex_w < ctx->width && ctx->tex_h < ctx->height && abs(w - ctx->tex_w) * 10 <= ctx->tex_w) {
     w = ctx->tex_w;
     h = ctx->tex_h;
   }
@@ -199,9 +219,7 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
         resize ? SWS_AREA : SWS_BICUBIC, NULL, NULL, NULL);
 
     if (ctx->sws_ctx) {
-      int scaled = sws_scale(ctx->sws_ctx, (const uint8_t *const *)render_frame->data,
-                             render_frame->linesize, 0, render_frame->height,
-                             ctx->frame_yuv->data, ctx->frame_yuv->linesize);
+      int scaled = sws_scale(ctx->sws_ctx, (const uint8_t *const *)render_frame->data, render_frame->linesize, 0, render_frame->height, ctx->frame_yuv->data, ctx->frame_yuv->linesize);
       if (scaled > 0) final_frame = ctx->frame_yuv;
       else { SDL_RenderClear(ctx->renderer); SDL_RenderPresent(ctx->renderer); return; }
     }
@@ -214,14 +232,12 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
               render_frame->format == AV_PIX_FMT_YUVJ422P ||
               render_frame->format == AV_PIX_FMT_YUVJ444P ||
               render_frame->format == AV_PIX_FMT_YUVJ440P;
-  SDL_Colorspace cs = pick_colorspace(render_frame, (final_frame != render_frame) && j_fmt,
-                                      render_frame->height);
+  SDL_Colorspace cs = pick_colorspace(render_frame, (final_frame != render_frame) && j_fmt, render_frame->height);
 
   if (!ctx->texture || ctx->current_tex_format != req_format || ctx->tex_cs != (uint32_t)cs ||
       ctx->tex_w != final_frame->width || ctx->tex_h != final_frame->height) {
     if (ctx->texture) SDL_DestroyTexture(ctx->texture);
-    ctx->texture = create_video_texture(ctx->renderer, req_format,
-                                        final_frame->width, final_frame->height, cs);
+    ctx->texture = create_video_texture(ctx->renderer, req_format, final_frame->width, final_frame->height, cs);
     ctx->current_tex_format = req_format;
     ctx->tex_cs = (uint32_t)cs;
     ctx->tex_w = final_frame->width;
@@ -237,42 +253,21 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
   if (req_format == SDL_PIXELFORMAT_NV12) {
     int uv_stride = final_frame->linesize[1];
     uint8_t *uv_ptr = final_frame->data[1];
-
     SDL_UpdateNVTexture(ctx->texture, NULL, y_ptr, y_stride, uv_ptr, uv_stride);
   } else {
     int u_stride = final_frame->linesize[1];
     int v_stride = final_frame->linesize[2];
     uint8_t *u_ptr = final_frame->data[1];
     uint8_t *v_ptr = final_frame->data[2];
-
     SDL_UpdateYUVTexture(ctx->texture, NULL, y_ptr, y_stride, u_ptr, u_stride, v_ptr, v_stride);
   }
   player_present_frame(ctx);
 }
 
 static void player_fallback_to_sw(PlayerContext *ctx) {
-  if (!ctx->fmt_ctx || ctx->video_stream < 0) return;
-  AVCodecParameters *v_par = ctx->fmt_ctx->streams[ctx->video_stream]->codecpar;
-  const AVCodec *v_codec = avcodec_find_decoder(v_par->codec_id);
-  if (!v_codec) return;
-
-  avcodec_free_context(&ctx->v_codec_ctx);
-  if (ctx->hw_device_ctx) { av_buffer_unref(&ctx->hw_device_ctx); ctx->hw_device_ctx = NULL; }
-  ctx->is_hw_accel = 0; ctx->hw_pix_fmt = AV_PIX_FMT_NONE; ctx->hw_transfer_failures = 0;
-
-  ctx->v_codec_ctx = avcodec_alloc_context3(v_codec);
-  if (!ctx->v_codec_ctx) return;
-  if (avcodec_parameters_to_context(ctx->v_codec_ctx, v_par) < 0) { avcodec_free_context(&ctx->v_codec_ctx); return; }
-  ctx->v_codec_ctx->thread_count = 0;
-  ctx->v_codec_ctx->thread_type  = FF_THREAD_FRAME | FF_THREAD_SLICE;
-  ctx->v_codec_ctx->opaque       = ctx;
-
-  if (avcodec_open2(ctx->v_codec_ctx, v_codec, NULL) < 0) { 
-    avcodec_free_context(&ctx->v_codec_ctx);
-  } else {
-    ctx->seek_target = ctx->last_video_time;
-    ctx->seek_requested = 1;
-  }
+  if (!player_init_sw_video(ctx)) return;
+  ctx->seek_target    = ctx->last_video_time;
+  ctx->seek_requested = 1;
 }
 
 static int should_stop_video(PlayerContext *ctx) {
@@ -284,9 +279,9 @@ static int should_stop_video(PlayerContext *ctx) {
 
 static double audio_margin(void) {
   static double m = -1.0;
-  if (m < 0.0) { 
-      const char *e = getenv("VIDP_AUDIO_MARGIN_MS"); 
-      m = e ? atof(e) / 1000.0 : 0.06;
+  if (m < 0.0) {
+    const char *e = getenv("VIDP_AUDIO_MARGIN_MS");
+    m = e ? atof(e) / 1000.0 : 0.06;
   }
   return m;
 }
@@ -358,7 +353,7 @@ void player_receive_video_frames(PlayerContext *ctx) {
 
       if (delay > AV_SYNC_DELAY_THRESHOLD) {
         int has_audio = audio_clock >= 0.0 && ctx->audio_dev > 0 && ctx->sdl_stream && ctx->bytes_per_sec > 0;
-        
+
         if (has_audio) {
           int queued = SDL_GetAudioStreamQueued(ctx->sdl_stream);
           double queued_sec = (queued > 0) ? (double)queued / ctx->bytes_per_sec : 0.0;
@@ -369,7 +364,6 @@ void player_receive_video_frames(PlayerContext *ctx) {
 
         if (delay > 0.0) {
           player_sleep_pumping(ctx, delay);
-
           if (ctx->seek_requested || ctx->file_finished ||
               (ctx->global_quit_ref && *ctx->global_quit_ref)) {
             av_frame_unref(ctx->frame_video);

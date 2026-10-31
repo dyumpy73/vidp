@@ -2,8 +2,8 @@
 
 int main(int argc, char *argv[]) {
 #if defined(__linux__) && defined(__GLIBC__)
-  mallopt(M_TRIM_THRESHOLD, 64 * 1024);
-  mallopt(M_MMAP_THRESHOLD, 128 * 1024);
+  mallopt(M_TRIM_THRESHOLD, 256 * 1024);
+  mallopt(M_MMAP_THRESHOLD, 512 * 1024);
 #endif
 
   av_log_set_level(AV_LOG_ERROR);
@@ -23,12 +23,15 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "[VidP] Continuing without audio...\n");
   }
 
+  player_init_font();
+
   if (playlist_count == 0) {
     printf("[VidP] No files given, showing idle screen.\n");
     if (!player_idle_run(&playlist, &playlist_count) || playlist_count == 0) {
-        printf("[VidP] No file selected, exiting.\n");
-        SDL_Quit();
-        return 0;
+      printf("[VidP] No file selected, exiting.\n");
+      player_cleanup_font();
+      SDL_Quit();
+      return 0;
     }
     printf("[VidP] Idle screen selected %d file(s).\n", playlist_count);
   }
@@ -52,14 +55,13 @@ int main(int argc, char *argv[]) {
     }
 
     player_close_file(&ctx);
-    if (ctx.nav_action == NAV_PREV && playlist_index > 0) {
-      playlist_index--;
-    } else {
-      playlist_index++;
-    }
+    if (ctx.nav_action == NAV_PREV && playlist_index > 0) playlist_index--;
+    else playlist_index++;
   }
 
+  ui_clear_cache();
   player_shutdown_display();
+  player_cleanup_font();
   free_playlist(playlist, playlist_count);
   SDL_Quit();
 

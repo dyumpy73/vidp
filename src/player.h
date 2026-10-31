@@ -71,10 +71,11 @@ typedef struct {
   unsigned int audio_out_buffer_size;
   int output_channels;
   int bytes_per_sec;
-  int out_freq;                /* swr output rate (= wanted_spec.freq) */
+  int out_freq;
   float volume;
   double audio_hw_delay;
-  double audio_starve_since;   /* when the audio queue became empty; 0 = not empty */
+  double audio_starve_since;
+  double pending_audio_pts;
 
   ASS_Library *ass_library;
   ASS_Renderer *ass_renderer;
@@ -118,6 +119,8 @@ typedef struct {
   int has_last_frame;
   SDL_FRect last_dest_rect;
 
+  double volume_overlay_until;
+
   int *global_quit_ref;
   int *playlist_index_ref;
   int playlist_count;
@@ -151,11 +154,14 @@ void free_playlist(char **playlist, int count);
 void playlist_collect_path(const char *path, char ***out, int *count);
 
 /* ---- idle.c ---- */
-int player_idle_run(char ***out_playlist, int *out_count);
+int  player_idle_run(char ***out_playlist, int *out_count);
+int player_init_font(void);
+void player_cleanup_font(void);
 
 /* ---- video.c ---- */
 enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts);
 int player_init_display(PlayerContext *ctx, const char *title);
+int player_init_sw_video(PlayerContext *ctx);
 void player_check_dynamic_resolution(PlayerContext *ctx, AVFrame *render_frame);
 void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame);
 void player_receive_video_frames(PlayerContext *ctx);
@@ -167,6 +173,7 @@ void player_receive_audio_frames(PlayerContext *ctx);
 void player_process_audio_packet(PlayerContext *ctx);
 void player_reset_audio_buffer(PlayerContext *ctx);
 double player_get_audio_clock(PlayerContext *ctx);
+void player_apply_volume(PlayerContext *ctx);
 
 /* ---- subtitle.c ---- */
 void player_init_subtitles(PlayerContext *ctx);
