@@ -60,6 +60,7 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
   ctx->sub_has_pixels = 0;
   ctx->audio_starve_since = 0.0;
   if (ctx->last_rendered_frame) av_frame_unref(ctx->last_rendered_frame);
+  if (ctx->sws_ctx) { sws_freeContext(ctx->sws_ctx); ctx->sws_ctx = NULL; }
 
   if (ctx->audio_dev > 0) {
     if (ctx->paused) SDL_PauseAudioDevice(ctx->audio_dev);

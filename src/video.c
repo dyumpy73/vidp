@@ -391,7 +391,7 @@ void player_receive_video_frames(PlayerContext *ctx) {
     if (sw_frame) av_frame_free(&sw_frame);
 
     static int trim_counter = 0;
-    if (++trim_counter >= 1000) {
+    if (++trim_counter >= 300) {
       trim_memory();
       trim_counter = 0;
     }
