@@ -86,8 +86,7 @@ make debug      # -g -O0
 make release    # -O2, stripped
 make clean
 
-sudo make install                     # → /usr/local
-sudo make install PREFIX=/usr         # system-wide
+sudo make install                     # system-wide
 sudo make install PREFIX=$HOME/.local # user-only, no root
 sudo make uninstall [PREFIX=...]      # must match install PREFIX
 ```
