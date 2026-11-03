@@ -1,63 +1,63 @@
 #ifndef VIDP_PLAYER_H
 #define VIDP_PLAYER_H
 
-#include <stdio.h>
+#include <dirent.h>
+#include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#include <dirent.h>
-#include <sys/stat.h>
 #include <strings.h>
-#include <math.h>
+#include <sys/stat.h>
+#include <time.h>
 
 #if defined(__linux__) && defined(__GLIBC__)
 #include <malloc.h>
 #endif
 
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-#include <libavutil/imgutils.h>
-#include <libavutil/channel_layout.h>
-#include <libavutil/display.h>
-#include <libswscale/swscale.h>
-#include <libswresample/swresample.h>
 #include <SDL3/SDL.h>
 #include <SDL3_ttf/SDL_ttf.h>
 #include <ass/ass.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/display.h>
+#include <libswresample/swresample.h>
+#include <libswscale/swscale.h>
 
-#define SEEK_STEP_SEC           10.0
-#define AV_SYNC_THRESHOLD_MAX   0.100
-#define AV_SYNC_THRESHOLD_MIN  -0.100
+#define SEEK_STEP_SEC 10.0
+#define AV_SYNC_THRESHOLD_MAX 0.100
+#define AV_SYNC_THRESHOLD_MIN -0.100
 #define AV_SYNC_DROP_THRESHOLD -0.020
-#define AV_SYNC_DELAY_THRESHOLD  0.002
-#define SUBTITLE_RENDER_SCALE   1
-#define MAX_SUBTITLE_STREAM     32
-#define SUBTITLE_PREROLL_SEC    1.5
-#define AV_SYNC_DROP_AUDIO     -0.050
-#define DOWNSCALE_MIN_RATIO     1.3
+#define AV_SYNC_DELAY_THRESHOLD 0.002
+#define MAX_SUBTITLE_STREAM 32
+#define SUBTITLE_PREROLL_SEC 1.5
+#define AV_SYNC_DROP_AUDIO -0.050
+#define DOWNSCALE_MIN_RATIO 1.3
 
 static inline void player_configure_video_threads(AVCodecContext *c) {
   int n = SDL_GetNumLogicalCPUCores();
-  if (n < 1) n = 1;
+  if (n < 1)
+    n = 1;
   int cap = ((long)c->width * c->height > 2200000L) ? 8 : 4;
   const char *e = getenv("VIDP_THREADS");
-  if (e) { int v = atoi(e); if (v > 0) cap = v; }
-  if (n > cap) n = cap;
+  if (e) {
+    int v = atoi(e);
+    if (v > 0)
+      cap = v;
+  }
+  if (n > cap)
+    n = cap;
   c->thread_count = n;
   c->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
 }
 
-typedef enum {
-  NAV_NEXT = 0,
-  NAV_PREV
-} NavAction;
+typedef enum { NAV_NEXT = 0, NAV_PREV } NavAction;
 
 typedef struct {
   AVFormatContext *fmt_ctx;
   int video_stream;
   int audio_stream;
-  int subtitle_stream;
 
   int subtitle_streams[MAX_SUBTITLE_STREAM];
   int subtitle_stream_count;
@@ -77,7 +77,6 @@ typedef struct {
 
   SDL_AudioStream *sdl_stream;
   SDL_AudioDeviceID audio_dev;
-  SDL_AudioSpec audio_spec;
   uint8_t *audio_out_buffer;
   unsigned int audio_out_buffer_size;
   int output_channels;
@@ -130,7 +129,6 @@ typedef struct {
   SDL_Cursor *blank_cursor;
 
   int has_last_frame;
-  SDL_FRect last_dest_rect;
 
   double volume_overlay_until;
 
@@ -155,11 +153,12 @@ double get_monotonic_time(void);
 void trim_memory(void);
 int is_media_file(const char *filename);
 int compare_strings(const void *a, const void *b);
-SDL_Cursor* create_blank_cursor(void);
+SDL_Cursor *create_blank_cursor(void);
 void ui_set_font(TTF_Font *font);
 void ui_clear_cache(void);
 void ui_text_left(SDL_Renderer *r, const char *text, SDL_Color c, int x, int y);
-void ui_text_center(SDL_Renderer *r, const char *text, SDL_Color c, int cx, int y);
+void ui_text_center(SDL_Renderer *r, const char *text, SDL_Color c, int cx,
+                    int y);
 
 /* ---- playlist.c ---- */
 void build_playlist(int argc, char *argv[], char ***playlist, int *count);
@@ -167,12 +166,13 @@ void free_playlist(char **playlist, int count);
 void playlist_collect_path(const char *path, char ***out, int *count);
 
 /* ---- idle.c ---- */
-int  player_idle_run(char ***out_playlist, int *out_count);
+int player_idle_run(char ***out_playlist, int *out_count);
 int player_init_font(void);
 void player_cleanup_font(void);
 
 /* ---- video.c ---- */
-enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts);
+enum AVPixelFormat get_hw_format(AVCodecContext *ctx,
+                                 const enum AVPixelFormat *pix_fmts);
 int player_init_display(PlayerContext *ctx, const char *title);
 int player_init_sw_video(PlayerContext *ctx);
 void player_check_dynamic_resolution(PlayerContext *ctx, AVFrame *render_frame);
@@ -193,17 +193,20 @@ void player_init_subtitles(PlayerContext *ctx);
 void player_process_subtitle_packet(PlayerContext *ctx);
 void player_reset_subtitle_state(PlayerContext *ctx);
 void player_switch_subtitle(PlayerContext *ctx);
-void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_FRect *dest_rect, int changed);
+void render_ass_overlay(PlayerContext *ctx, ASS_Image *img,
+                        SDL_FRect *dest_rect, int changed);
 void player_update_ass_storage(PlayerContext *ctx);
 
 /* ---- player.c ---- */
-int  player_open_file(PlayerContext *ctx, const char *filepath, int index, int total);
+int player_open_file(PlayerContext *ctx, const char *filepath, int index,
+                     int total);
 void player_close_file(PlayerContext *ctx);
 void player_shutdown_display(void);
 void player_run_loop(PlayerContext *ctx, int *global_quit, int *playlist_index);
 void player_do_seek(PlayerContext *ctx, double target_sec);
 void player_sleep_pumping(PlayerContext *ctx, double seconds);
-void player_handle_events(PlayerContext *ctx, int *global_quit, int *playlist_index);
+void player_handle_events(PlayerContext *ctx, int *global_quit,
+                          int *playlist_index);
 void player_present_frame(PlayerContext *ctx);
 void player_compute_dest_rect(PlayerContext *ctx, SDL_FRect *dest_rect);
 
