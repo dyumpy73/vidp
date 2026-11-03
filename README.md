@@ -1,6 +1,6 @@
 # VidP (Video Player)
 
-A lightweight C media player built with FFmpeg, SDL3, and libass. The application's playback pipeline (demux → decode → convert → render) runs on a single thread. FFmpeg's video decoder and SDL's audio device use their own internal worker threads.
+A lightweight C media player built with FFmpeg, SDL3, and libass. The application's playback pipeline (demux → decode → convert → render) runs on a single thread. FFmpeg's video decoder (capped at 4 threads by default, see `VIDP_THREADS`) and SDL's audio device use their own internal worker threads.
 
 ## Features
 
@@ -18,7 +18,7 @@ A lightweight C media player built with FFmpeg, SDL3, and libass. The applicatio
 - **Idle screen + file picker** when launched without any media argument.
 - **Drag & drop** of files or folders onto the idle screen (X11/XWayland).
 - Cursor hides after 2 s idle. Volume persists across playlist entries.
-- Memory is trimmed with `malloc_trim(0)` on track switch, on seek, and every 300 rendered frames (glibc only).
+- Tuned for a **low memory footprint**
 
 ## Layout
 
@@ -117,6 +117,7 @@ vidp                           # idle screen
 | Variable | Effect |
 | :--- | :--- |
 | `VIDP_SCALE=off` (or `0`) | Disable downscaling the video texture to window size. |
+| `VIDP_THREADS=<n>` | Maximum number of video decoder threads (default `4`, or `8` for sources larger than 1080p; never more than the logical CPU cores). Lower values use less memory, higher values help heavy software decodes such as 4K AV1/HEVC. |
 | `VIDP_AUDIO_MARGIN_MS=<ms>` | Safety margin used when video waits on the audio buffer (default `60`). |
 
 ## Keyboard Shortcuts
@@ -164,7 +165,7 @@ folders can be queued in one go.
 - Subtitle events that started before the 1.5 s pre-roll window are not restored after a seek.
 - Files without a video stream (audio-only) are not supported.
 - No loop/repeat; the player exits after the last playlist entry.
-- No keyboard-free controls: no mouse seeking or on-screen seek bar.
+- No mouse controls: no click-to-seek or on-screen seek bar.
 - HDR content is converted to 8-bit without tone mapping.
 - Hardware-decoded frames are copied back to system memory (no zero-copy).
 - Audio device is not re-initialized on a mid-stream channel layout change.
