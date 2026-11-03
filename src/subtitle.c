@@ -219,7 +219,7 @@ void player_process_subtitle_packet(PlayerContext *ctx) {
   double duration_sub = ctx->packet->duration * av_q2d(ctx->fmt_ctx->streams[pkt_stream]->time_base);
   int64_t start_ms = (int64_t)(sub_pts * 1000);
   int64_t dur_ms   = (int64_t)(duration_sub * 1000);
-  if (dur_ms <= 0) dur_ms = 5000;
+  if (dur_ms < 0) dur_ms = 0;
 
   if (ctx->last_video_time >= 0.0) {
     double sub_end = sub_pts + duration_sub;
