@@ -36,8 +36,7 @@ int player_init_sw_video(PlayerContext *ctx) {
     avcodec_free_context(&ctx->v_codec_ctx);
     return 0;
   }
-  ctx->v_codec_ctx->thread_count = 0;
-  ctx->v_codec_ctx->thread_type  = FF_THREAD_FRAME | FF_THREAD_SLICE;
+  player_configure_video_threads(ctx->v_codec_ctx);
   ctx->v_codec_ctx->opaque       = ctx;
 
   if (avcodec_open2(ctx->v_codec_ctx, v_codec, NULL) < 0) {
@@ -123,10 +122,7 @@ void player_check_dynamic_resolution(PlayerContext *ctx, AVFrame *render_frame) 
   if (ctx->texture)   { SDL_DestroyTexture(ctx->texture); ctx->texture = NULL; }
 
   ctx->current_tex_format = 0;
-  if (ctx->sub_surf) { SDL_DestroySurface(ctx->sub_surf); ctx->sub_surf = NULL; }
-  if (ctx->sub_tex)  { SDL_DestroyTexture(ctx->sub_tex);  ctx->sub_tex  = NULL; }
-
-  player_update_ass_storage(ctx);
+  player_reset_subtitle_state(ctx);
 }
 
 static int downscale_enabled(void) {
@@ -374,12 +370,12 @@ void player_receive_video_frames(PlayerContext *ctx) {
       }
     }
 
-    if (ctx->last_rendered_frame) {
-      av_frame_unref(ctx->last_rendered_frame);
-      av_frame_ref(ctx->last_rendered_frame, render_frame);
-    }
 
+    if (ctx->last_rendered_frame) av_frame_unref(ctx->last_rendered_frame);
     player_render_current_frame(ctx, render_frame);
+    if (ctx->last_rendered_frame && ctx->texture &&
+        (ctx->tex_w != ctx->width || ctx->tex_h != ctx->height))
+      av_frame_ref(ctx->last_rendered_frame, render_frame);
     ctx->step_pending = 0;
     av_frame_unref(ctx->frame_video);
     if (sw_frame) av_frame_free(&sw_frame);

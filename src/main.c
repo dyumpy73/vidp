@@ -2,8 +2,9 @@
 
 int main(int argc, char *argv[]) {
 #if defined(__linux__) && defined(__GLIBC__)
-  mallopt(M_TRIM_THRESHOLD, 256 * 1024);
-  mallopt(M_MMAP_THRESHOLD, 512 * 1024);
+  mallopt(M_TRIM_THRESHOLD, 64 * 1024);
+  mallopt(M_MMAP_THRESHOLD, 128 * 1024);
+  mallopt(M_ARENA_MAX, 2);
 #endif
 
   av_log_set_level(AV_LOG_ERROR);

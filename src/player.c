@@ -58,7 +58,7 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
   ctx->discard_until = target_sec;
   ctx->audio_discard_until = target_sec;
   ctx->consecutive_drops = 0;
-  ctx->sub_has_pixels = 0;
+  ctx->sub_frame_w = 0;
   ctx->audio_starve_since = 0.0;
   if (ctx->last_rendered_frame) av_frame_unref(ctx->last_rendered_frame);
   if (ctx->sws_ctx) { sws_freeContext(ctx->sws_ctx); ctx->sws_ctx = NULL; }
@@ -130,8 +130,7 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index, int to
   if (!ctx->v_codec_ctx) goto fail;
   if (avcodec_parameters_to_context(ctx->v_codec_ctx, v_par) < 0) goto fail;
 
-  ctx->v_codec_ctx->thread_count = 0;
-  ctx->v_codec_ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+  player_configure_video_threads(ctx->v_codec_ctx);
   ctx->v_codec_ctx->opaque = ctx;
   ctx->hw_pix_fmt = AV_PIX_FMT_NONE;
 
@@ -206,6 +205,7 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index, int to
   snprintf(title, sizeof(title), "VidP [%d/%d] - %s", index + 1, total, base);
 
   if (!player_init_display(ctx, title)) goto fail;
+  trim_memory();
   return 1;
 
 fail:
@@ -225,7 +225,6 @@ void player_close_file(PlayerContext *ctx) {
   ctx->ass_track = NULL;
   if (ctx->ass_renderer) { ass_renderer_done(ctx->ass_renderer); ctx->ass_renderer = NULL; }
   if (ctx->ass_library) { ass_library_done(ctx->ass_library); ctx->ass_library = NULL; }
-  if (ctx->sub_surf) { SDL_DestroySurface(ctx->sub_surf); ctx->sub_surf = NULL; }
   if (ctx->sub_tex)  { SDL_DestroyTexture(ctx->sub_tex);  ctx->sub_tex  = NULL; }
 
   free(ctx->sub_tmp); ctx->sub_tmp = NULL; ctx->sub_tmp_cap = 0;

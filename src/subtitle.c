@@ -34,103 +34,98 @@ void player_update_ass_storage(PlayerContext *ctx) {
   ass_set_storage_size(ctx->ass_renderer, w, h);
 }
 
+static void overlay_draw(PlayerContext *ctx, const SDL_FRect *dest_rect) {
+  SDL_FRect src = { 0.0f, 0.0f, (float)ctx->sub_w, (float)ctx->sub_h };
+  SDL_FRect dst = { dest_rect->x + (float)ctx->sub_x, dest_rect->y + (float)ctx->sub_y,
+                    (float)ctx->sub_w, (float)ctx->sub_h };
+  SDL_RenderTexture(ctx->renderer, ctx->sub_tex, &src, &dst);
+}
+
 void render_ass_overlay(PlayerContext *ctx, ASS_Image *img, SDL_FRect *dest_rect, int changed) {
   if (!img || dest_rect->w <= 0 || dest_rect->h <= 0) return;
 
-  int target_w = dest_rect->w / SUBTITLE_RENDER_SCALE;
-  int target_h = dest_rect->h / SUBTITLE_RENDER_SCALE;
-  if (target_w < 1) target_w = 1;
-  if (target_h < 1) target_h = 1;
+  int frame_w = (int)dest_rect->w, frame_h = (int)dest_rect->h;
+  if (frame_w < 1 || frame_h < 1) return;
 
-  int rebuild = changed;
-
-  if (!ctx->sub_surf || ctx->sub_surf->w != target_w || ctx->sub_surf->h != target_h) {
-    if (ctx->sub_surf) SDL_DestroySurface(ctx->sub_surf);
-    ctx->sub_surf = SDL_CreateSurface(target_w, target_h, SDL_PIXELFORMAT_RGBA32);
-    if (!ctx->sub_surf) return;
-
-    if (ctx->sub_tex) {
-      SDL_DestroyTexture(ctx->sub_tex);
-      ctx->sub_tex = NULL;
-    }
-  }
-
-  if (!ctx->sub_tex) {
-    ctx->sub_tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA32,
-                                     SDL_TEXTUREACCESS_STREAMING, target_w, target_h);
-    if (!ctx->sub_tex) return;
-    SDL_SetTextureBlendMode(ctx->sub_tex, SDL_BLENDMODE_BLEND);
-    SDL_SetTextureScaleMode(ctx->sub_tex, SDL_SCALEMODE_LINEAR);
-    rebuild = 1;
-  }
-
+  int rebuild = changed || ctx->sub_frame_w != frame_w || ctx->sub_frame_h != frame_h ||
+                (ctx->sub_has_pixels && !ctx->sub_tex);
   if (!rebuild) {
-    if (ctx->sub_has_pixels) {
-      SDL_RenderTexture(ctx->renderer, ctx->sub_tex, NULL, dest_rect);
-    } else {
-      if (ctx->sub_tex) { SDL_DestroyTexture(ctx->sub_tex); ctx->sub_tex = NULL; }
-      if (ctx->sub_surf) { SDL_DestroySurface(ctx->sub_surf); ctx->sub_surf = NULL; }
-    }
+    if (ctx->sub_has_pixels && ctx->sub_tex) overlay_draw(ctx, dest_rect);
     return;
   }
 
-  SDL_FillSurfaceRect(ctx->sub_surf, NULL, 0);
+  int x0 = frame_w, y0 = frame_h, x1 = 0, y1 = 0;
+  for (ASS_Image *c = img; c; c = c->next) {
+    if (c->w <= 0 || c->h <= 0 || (255 - (c->color & 0xFF)) == 0) continue;
+    int ax0 = c->dst_x < 0 ? 0 : c->dst_x;
+    int ay0 = c->dst_y < 0 ? 0 : c->dst_y;
+    int ax1 = c->dst_x + c->w > frame_w ? frame_w : c->dst_x + c->w;
+    int ay1 = c->dst_y + c->h > frame_h ? frame_h : c->dst_y + c->h;
+    if (ax0 >= ax1 || ay0 >= ay1) continue;
+    if (ax0 < x0) x0 = ax0;
+    if (ay0 < y0) y0 = ay0;
+    if (ax1 > x1) x1 = ax1;
+    if (ay1 > y1) y1 = ay1;
+  }
 
-  uint32_t *pixels = (uint32_t *)ctx->sub_surf->pixels;
-  int surf_w = ctx->sub_surf->w;
-  int has_pixels = 0;
+  ctx->sub_frame_w = frame_w;
+  ctx->sub_frame_h = frame_h;
+  if (x1 <= x0 || y1 <= y0) { ctx->sub_has_pixels = 0; return; }
 
-  ASS_Image *curr = img;
-  while (curr) {
-    if (curr->w > 0 && curr->h > 0) {
-      uint8_t r = (curr->color >> 24) & 0xFF;
-      uint8_t g = (curr->color >> 16) & 0xFF;
-      uint8_t b = (curr->color >> 8) & 0xFF;
-      uint8_t a = 255 - (curr->color & 0xFF);
+  int bw = x1 - x0, bh = y1 - y0;
 
-      if (a > 0) {
-        has_pixels = 1;
-        int layer_dx = curr->dst_x / SUBTITLE_RENDER_SCALE;
-        int layer_dy = curr->dst_y / SUBTITLE_RENDER_SCALE;
-        int layer_w  = curr->w / SUBTITLE_RENDER_SCALE;
-        int layer_h  = curr->h / SUBTITLE_RENDER_SCALE;
-        if (layer_w < 1) layer_w = 1;
-        if (layer_h < 1) layer_h = 1;
+  if (!ctx->sub_tex || ctx->sub_tex_w < bw || ctx->sub_tex_h < bh) {
+    int cw = (bw + 63) & ~63, ch = (bh + 63) & ~63;
+    if (cw > frame_w) cw = frame_w;
+    if (ch > frame_h) ch = frame_h;
+    if (cw < ctx->sub_tex_w) cw = ctx->sub_tex_w;
+    if (ch < ctx->sub_tex_h) ch = ctx->sub_tex_h;
+    if (ctx->sub_tex) { SDL_DestroyTexture(ctx->sub_tex); ctx->sub_tex = NULL; }
+    ctx->sub_tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA32,
+                                     SDL_TEXTUREACCESS_STREAMING, cw, ch);
+    if (!ctx->sub_tex) { ctx->sub_has_pixels = 0; ctx->sub_tex_w = ctx->sub_tex_h = 0; return; }
+    SDL_SetTextureBlendMode(ctx->sub_tex, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(ctx->sub_tex, SDL_SCALEMODE_NEAREST);
+    ctx->sub_tex_w = cw;
+    ctx->sub_tex_h = ch;
+  }
 
-        for (int y = 0; y < layer_h; y++) {
-          int dst_y = layer_dy + y;
-          if (dst_y < 0 || dst_y >= target_h) continue;
+  SDL_Rect lock = { 0, 0, bw, bh };
+  void *pix = NULL;
+  int pitch = 0;
+  if (!SDL_LockTexture(ctx->sub_tex, &lock, &pix, &pitch)) { ctx->sub_has_pixels = 0; return; }
 
-          int src_y = y * SUBTITLE_RENDER_SCALE;
-          if (src_y >= curr->h) src_y = curr->h - 1;
-          const uint8_t *bmp_row = curr->bitmap + src_y * curr->stride;
+  for (int y = 0; y < bh; y++) memset((uint8_t *)pix + (size_t)y * pitch, 0, (size_t)bw * 4);
 
-          uint32_t *row = pixels + dst_y * surf_w;
+  for (ASS_Image *c = img; c; c = c->next) {
+    if (c->w <= 0 || c->h <= 0) continue;
+    uint8_t a = 255 - (c->color & 0xFF);
+    if (a == 0) continue;
+    uint8_t r = (c->color >> 24) & 0xFF;
+    uint8_t g = (c->color >> 16) & 0xFF;
+    uint8_t b = (c->color >> 8) & 0xFF;
 
-          for (int x = 0; x < layer_w; x++) {
-            int dst_x = layer_dx + x;
-            if (dst_x < 0 || dst_x >= target_w) continue;
+    int dx = c->dst_x, dy = c->dst_y;
+    int ys = dy < y0 ? y0 - dy : 0;
+    int ye = dy + c->h > y1 ? y1 - dy : c->h;
+    int xs = dx < x0 ? x0 - dx : 0;
+    int xe = dx + c->w > x1 ? x1 - dx : c->w;
 
-            int src_x = x * SUBTITLE_RENDER_SCALE;
-            if (src_x >= curr->w) src_x = curr->w - 1;
-
-            uint8_t alpha = bmp_row[src_x];
-            if (alpha == 0) continue;
-
-            uint8_t final_a = (uint8_t)((alpha * a) / 255);
-            blend_ass_pixel(&row[dst_x], r, g, b, final_a);
-          }
-        }
+    for (int y = ys; y < ye; y++) {
+      const uint8_t *src = c->bitmap + (size_t)y * c->stride;
+      uint32_t *row = (uint32_t *)((uint8_t *)pix + (size_t)(dy + y - y0) * pitch);
+      for (int x = xs; x < xe; x++) {
+        uint8_t alpha = src[x];
+        if (alpha == 0) continue;
+        blend_ass_pixel(&row[dx + x - x0], r, g, b, (uint8_t)((alpha * a) / 255));
       }
     }
-    curr = curr->next;
   }
+  SDL_UnlockTexture(ctx->sub_tex);
 
-  ctx->sub_has_pixels = has_pixels;
-  SDL_UpdateTexture(ctx->sub_tex, NULL, ctx->sub_surf->pixels, ctx->sub_surf->pitch);
-  if (has_pixels) {
-    SDL_RenderTexture(ctx->renderer, ctx->sub_tex, NULL, dest_rect);
-  }
+  ctx->sub_x = x0; ctx->sub_y = y0; ctx->sub_w = bw; ctx->sub_h = bh;
+  ctx->sub_has_pixels = 1;
+  overlay_draw(ctx, dest_rect);
 }
 
 static void player_extract_attached_fonts(PlayerContext *ctx) {
@@ -146,6 +141,8 @@ static void player_extract_attached_fonts(PlayerContext *ctx) {
           ass_add_font(ctx->ass_library, (char *)filename,
                        (char *)st->codecpar->extradata,
                        st->codecpar->extradata_size);
+          av_freep(&st->codecpar->extradata);
+          st->codecpar->extradata_size = 0;
         }
       }
     }
@@ -176,7 +173,7 @@ void player_init_subtitles(PlayerContext *ctx) {
   ass_set_shaper(ctx->ass_renderer, ASS_SHAPING_COMPLEX);
   ass_set_fonts(ctx->ass_renderer, NULL, "Sans",
                 ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
-  ass_set_cache_limits(ctx->ass_renderer, 1000, 64);
+  ass_set_cache_limits(ctx->ass_renderer, 500, 32);
 
   for (int i = 0; i < ctx->subtitle_stream_count; i++) {
     ctx->ass_tracks[i] = ass_new_track(ctx->ass_library);
@@ -219,7 +216,7 @@ void player_process_subtitle_packet(PlayerContext *ctx) {
   double duration_sub = ctx->packet->duration * av_q2d(ctx->fmt_ctx->streams[pkt_stream]->time_base);
   int64_t start_ms = (int64_t)(sub_pts * 1000);
   int64_t dur_ms   = (int64_t)(duration_sub * 1000);
-  if (dur_ms < 0) dur_ms = 0;
+  if (dur_ms <= 0) dur_ms = 5000;
 
   if (ctx->last_video_time >= 0.0) {
     double sub_end = sub_pts + duration_sub;
@@ -241,8 +238,9 @@ void player_process_subtitle_packet(PlayerContext *ctx) {
 }
 
 void player_reset_subtitle_state(PlayerContext *ctx) {
-  if (ctx->sub_surf) { SDL_DestroySurface(ctx->sub_surf); ctx->sub_surf = NULL; }
   if (ctx->sub_tex)  { SDL_DestroyTexture(ctx->sub_tex);  ctx->sub_tex  = NULL; }
+  ctx->sub_tex_w = ctx->sub_tex_h = 0;
+  ctx->sub_frame_w = ctx->sub_frame_h = 0;
   ctx->sub_has_pixels = 0;
   player_update_ass_storage(ctx);
 }

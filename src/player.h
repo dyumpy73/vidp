@@ -37,6 +37,17 @@
 #define AV_SYNC_DROP_AUDIO     -0.050
 #define DOWNSCALE_MIN_RATIO     1.3
 
+static inline void player_configure_video_threads(AVCodecContext *c) {
+  int n = SDL_GetNumLogicalCPUCores();
+  if (n < 1) n = 1;
+  int cap = ((long)c->width * c->height > 2200000L) ? 8 : 4;
+  const char *e = getenv("VIDP_THREADS");
+  if (e) { int v = atoi(e); if (v > 0) cap = v; }
+  if (n > cap) n = cap;
+  c->thread_count = n;
+  c->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+}
+
 typedef enum {
   NAV_NEXT = 0,
   NAV_PREV
@@ -81,8 +92,10 @@ typedef struct {
   ASS_Renderer *ass_renderer;
   ASS_Track *ass_track;
   ASS_Track *ass_tracks[MAX_SUBTITLE_STREAM];
-  SDL_Surface *sub_surf;
   SDL_Texture *sub_tex;
+  int sub_tex_w, sub_tex_h;
+  int sub_x, sub_y, sub_w, sub_h;
+  int sub_frame_w, sub_frame_h;
 
   SDL_Window *window;
   SDL_Renderer *renderer;
