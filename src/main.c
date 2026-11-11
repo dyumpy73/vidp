@@ -14,13 +14,15 @@ int main(int argc, char *argv[]) {
   build_playlist(argc, argv, &playlist, &playlist_count);
 
   if (!SDL_Init(SDL_INIT_VIDEO)) {
-    fprintf(stderr, "[VidP] Failed to initialize SDL VIDEO: %s\n", SDL_GetError());
+    fprintf(stderr, "[VidP] Failed to initialize SDL VIDEO: %s\n",
+            SDL_GetError());
     free_playlist(playlist, playlist_count);
     return EXIT_FAILURE;
   }
 
   if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
-    fprintf(stderr, "[VidP] Warning: Failed to initialize SDL AUDIO: %s\n", SDL_GetError());
+    fprintf(stderr, "[VidP] Warning: Failed to initialize SDL AUDIO: %s\n",
+            SDL_GetError());
     fprintf(stderr, "[VidP] Continuing without audio...\n");
   }
 
@@ -47,17 +49,21 @@ int main(int argc, char *argv[]) {
     char *current_file = playlist[playlist_index];
     const char *base = strrchr(current_file, '/');
     base = base ? base + 1 : current_file;
-    printf("[VidP] (%d/%d) Playing: %s\n", playlist_index + 1, playlist_count, base);
+    printf("[VidP] (%d/%d) Playing: %s\n", playlist_index + 1, playlist_count,
+           base);
 
     if (player_open_file(&ctx, current_file, playlist_index, playlist_count)) {
       player_run_loop(&ctx, &global_quit, &playlist_index);
+      player_close_file(&ctx);
     } else {
-      fprintf(stderr, "[VidP] Failed to open file or initialize player: %s\n", current_file);
+      fprintf(stderr, "[VidP] Failed to open file or initialize player: %s\n",
+              current_file);
     }
 
-    player_close_file(&ctx);
-    if (ctx.nav_action == NAV_PREV && playlist_index > 0) playlist_index--;
-    else playlist_index++;
+    if (ctx.nav_action == NAV_PREV && playlist_index > 0)
+      playlist_index--;
+    else
+      playlist_index++;
   }
 
   ui_clear_cache();

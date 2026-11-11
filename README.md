@@ -1,24 +1,20 @@
 # VidP (Video Player)
 
-A lightweight C media player built with FFmpeg, SDL3, and libass. The application's playback pipeline (demux → decode → convert → render) runs on a single thread. FFmpeg's video decoder (capped at 4 threads by default, see `VIDP_THREADS`) and SDL's audio device use their own internal worker threads.
+Lightweight C media player built with FFmpeg, SDL3, and libass.
 
 ## Features
 
-- **Hardware decoding** with automatic fallback: VAAPI → CUDA → VDPAU → software (Linux). Falls back after a failed open or 10 consecutive frame transfer failures.
-- **Render backend** auto-select: OpenGL → OpenGLES2 → Vulkan → software.
-- **Subtitles:** ASS/SSA via libass, multiple tracks per file, embedded fonts (MKV attachments) loaded automatically.
-- **A/V sync:** audio is the master clock (last pushed PTS minus queued data and device latency). Without audio (or if it starves for > 250 ms) it falls back to the wall clock, which re-anchors when drift exceeds 100 ms. Late frames are dropped (> 50 ms behind audio, > 20 ms behind the wall-clock target when no audio is available), max 15 in a row.
-- **Audio:** resampled to 16-bit PCM via libswresample and played through an SDL3 audio stream. Source sample rate is preserved; surround (> 2 channels) is downmixed to stereo.
-- **Dynamic resolution** handled on the fly (e.g. 720p intro → 1080p main).
-- Respects **SAR** and **rotation** metadata.
-- Video texture is **downscaled to the window size** when the source is much larger than the display area (see `VIDP_SCALE` below).
-- Initial window sized to video, capped at 90% of usable display area.
-- Subtitle seek uses a **1.5 s pre-roll** so subtitles that started shortly before the seek target still render.
-- **Playlist** from folders or explicit files. Natural sort (ep2 before ep10), case-insensitive, applied per folder. Explicit CLI order preserved.
-- **Idle screen + file picker** when launched without any media argument.
-- **Drag & drop** of files or folders onto the idle screen (X11/XWayland).
-- Cursor hides after 2 s idle. Volume persists across playlist entries.
-- Tuned for a **low memory footprint**
+- Multi-threaded pipeline: demuxer + video decoder + audio decoder + main render thread
+- Hardware decode: VAAPI → CUDA → VDPAU → software (auto-fallback)
+- Render: OpenGL → OpenGLES2 → Vulkan → software (auto-select)
+- ASS/SSA subtitles via libass, embedded fonts supported
+- Audio master clock, wall-clock fallback
+- Adaptive queue sizing based on RAM/CPU
+- Seek with stale-packet guard (no H.264 reference warnings)
+- Persistent demuxer — seek back after EOF works
+- Playlist from folders or explicit files, natural sort
+- Idle screen with file picker, drag & drop
+- Texture downscale to window size
 
 ## Layout
 
@@ -38,13 +34,7 @@ Makefile
 
 ## Dependencies
 
-Minimum versions (approximate): **FFmpeg 6.1+** (uses `AVChannelLayout` and
-codec-parameter side data), **SDL3** and **SDL3_ttf** 3.x, **libass**.
-
-Text rendering needs a TrueType font: DejaVu Sans, Liberation Sans, or Noto
-Sans in the usual system paths, or any font that `fc-match sans` can resolve
-(requires fontconfig). Without a font, the idle screen and volume overlay
-still work but show no text.
+FFmpeg 6.1+, SDL3, SDL3_ttf, libass. A TrueType font (DejaVu/Liberation/Noto) for UI text.
 
 **Arch:**
 ```bash
@@ -74,7 +64,7 @@ chmod +x VidP-x86_64.AppImage
 **Debian Forky / Testing / Sid:**
 ```bash
 wget https://github.com/dyumpy73/vidp/releases/latest/download/vidp_0.0.4_amd64.deb
-sudo dpkg -i vidp_0.0.4_amd64.deb
+sudo dpkg -i vidp_0.1.0_amd64.deb
 sudo apt install -f
 ```
 
@@ -101,24 +91,24 @@ gcc -O2 -Wall -Wextra src/*.c -o vidp \
 ## Usage
 
 ```bash
-vidp path/to/video.mkv         # single file
-vidp path/to/anime_folder/     # whole directory
-vidp ep1.mkv ep2.mkv ep3.mkv   # explicit files
-vidp                           # idle screen
+vidp file.mkv         # single file
+vidp folder/          # directory
+vidp ep1.mkv ep2.mkv  # explicit files
+vidp                  # idle screen
 ```
 
 - Folders are scanned non-recursively; hidden files are skipped.
-- Extensions: `mkv mp4 avi webm mov flv m4v ts wmv mpg mpeg ogv`. Note that `.ts` also matches TypeScript source files in a scanned folder.
-- Arguments that do not exist or lack a supported extension are ignored. If none remain, the idle screen is shown. A file with a supported extension that fails to open is skipped with an error message.
-- The window title shows the playlist position and file name.
+- Extensions: `mkv mp4 avi webm mov flv m4v wmv mpg mpeg ogv`.
 
 ### Environment variables
 
 | Variable | Effect |
 | :--- | :--- |
 | `VIDP_SCALE=off` (or `0`) | Disable downscaling the video texture to window size. |
-| `VIDP_THREADS=<n>` | Maximum number of video decoder threads (default `4`, or `8` for sources larger than 1080p; never more than the logical CPU cores). Lower values use less memory, higher values help heavy software decodes such as 4K AV1/HEVC. |
-| `VIDP_AUDIO_MARGIN_MS=<ms>` | Safety margin used when video waits on the audio buffer (default `60`). |
+| `VIDP_THREADS=<n>` | Video decoder threads (default 2 on HW, min(4,cores) on SW). |
+| `VIDP_FRAME_QUEUE=<n>` | Frame queue size, 2–8. |
+| `VIDP_PACKET_QUEUE=<n>` | Packet queue size, 4–32. |
+| `VIDP_LOWMEM=1` | Force minimal queues. |
 
 ## Keyboard Shortcuts
 
@@ -160,16 +150,12 @@ folders can be queued in one go.
 
 ## Known Limitations
 
-- Single audio track (the first one) — no runtime switching.
-- Only ASS/SSA subtitles (SRT/WebVTT/PGS/VobSub ignored); no external subtitle files.
-- Subtitle events that started before the 1.5 s pre-roll window are not restored after a seek.
-- Files without a video stream (audio-only) are not supported.
-- No loop/repeat; the player exits after the last playlist entry.
-- No mouse controls: no click-to-seek or on-screen seek bar.
-- HDR content is converted to 8-bit without tone mapping.
-- Hardware-decoded frames are copied back to system memory (no zero-copy).
-- Audio device is not re-initialized on a mid-stream channel layout change.
-- Hardware acceleration is Linux-only (VAAPI, CUDA, VDPAU).
+- Single audio track only (first one).
+- ASS/SSA subtitles only, no external files.
+- No audio-only files.
+- No loop.
+- No mouse controls.
+- HDR → 8-bit without tone mapping (no zero-copy HW decode).
 
 ## License
 

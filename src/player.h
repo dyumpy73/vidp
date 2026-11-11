@@ -1,8 +1,12 @@
 #ifndef VIDP_PLAYER_H
 #define VIDP_PLAYER_H
 
+#include <SDL3/SDL_mutex.h>
+#include <SDL3/SDL_thread.h>
 #include <dirent.h>
+#include <libavcodec/packet.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,24 +39,54 @@
 #define AV_SYNC_DROP_AUDIO -0.050
 #define DOWNSCALE_MIN_RATIO 1.3
 
-static inline void player_configure_video_threads(AVCodecContext *c) {
-  int n = SDL_GetNumLogicalCPUCores();
-  if (n < 1)
-    n = 1;
-  int cap = ((long)c->width * c->height > 2200000L) ? 8 : 4;
+#define MAX_FRAME_QUEUE_HARD_LIMIT 8
+#define MAX_PACKET_QUEUE_HARD_LIMIT 32
+
+static inline void player_configure_video_threads(AVCodecContext *c,
+                                                  int is_hw_accel) {
+  int logical = SDL_GetNumLogicalCPUCores();
+  if (logical < 1)
+    logical = 1;
+
+  int cap;
+  if (is_hw_accel) {
+    cap = 2;
+  } else {
+    cap = logical > 4 ? 4 : logical;
+  }
+
   const char *e = getenv("VIDP_THREADS");
   if (e) {
     int v = atoi(e);
     if (v > 0)
       cap = v;
   }
-  if (n > cap)
-    n = cap;
-  c->thread_count = n;
+
+  if (logical > cap)
+    logical = cap;
+  c->thread_count = logical;
   c->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
 }
 
 typedef enum { NAV_NEXT = 0, NAV_PREV } NavAction;
+
+typedef struct {
+  AVPacket *pkts[MAX_PACKET_QUEUE_HARD_LIMIT];
+  int r_idx, w_idx, count;
+  int capacity;
+  SDL_Mutex *mutex;
+  SDL_Condition *cond;
+  atomic_int abort_request;
+} PacketQueue;
+
+typedef struct {
+  AVFrame *frames[MAX_FRAME_QUEUE_HARD_LIMIT];
+  int r_idx, w_idx, count;
+  int capacity;
+  SDL_Mutex *mutex;
+  SDL_Condition *cond;
+  atomic_int abort_request;
+} FrameQueue;
 
 typedef struct {
   AVFormatContext *fmt_ctx;
@@ -75,6 +109,22 @@ typedef struct {
   AVFrame *last_rendered_frame;
   AVPacket *packet;
 
+  PacketQueue v_pkt_q;
+  PacketQueue a_pkt_q;
+  FrameQueue v_frame_q;
+
+  int frame_queue_cap;
+  int packet_queue_cap;
+
+  SDL_Thread *demux_th, *v_dec_th, *a_dec_th;
+  atomic_int abort_request;
+  atomic_int demux_eof;
+  atomic_int v_dec_eof;
+  atomic_int a_dec_eof;
+  atomic_int audio_generation;
+  atomic_int seek_generation;
+  SDL_Mutex *seek_mutex;
+
   SDL_AudioStream *sdl_stream;
   SDL_AudioDeviceID audio_dev;
   uint8_t *audio_out_buffer;
@@ -84,8 +134,14 @@ typedef struct {
   int out_freq;
   float volume;
   double audio_hw_delay;
-  double audio_starve_since;
-  double pending_audio_pts;
+
+  _Atomic double audio_starve_since;
+  _Atomic double pending_audio_pts;
+  _Atomic double last_audio_pts;
+  _Atomic double discard_until;
+  _Atomic double audio_discard_until;
+
+  double last_clock_valid_time;
 
   ASS_Library *ass_library;
   ASS_Renderer *ass_renderer;
@@ -107,9 +163,6 @@ typedef struct {
   int file_finished;
   int paused;
   double last_video_time;
-  double last_audio_pts;
-  double discard_until;
-  double audio_discard_until;
   double playback_start_wall;
   double first_video_time;
   int video_clock_started;
@@ -129,7 +182,6 @@ typedef struct {
   SDL_Cursor *blank_cursor;
 
   int has_last_frame;
-
   double volume_overlay_until;
 
   int *global_quit_ref;
@@ -175,18 +227,15 @@ enum AVPixelFormat get_hw_format(AVCodecContext *ctx,
                                  const enum AVPixelFormat *pix_fmts);
 int player_init_display(PlayerContext *ctx, const char *title);
 int player_init_sw_video(PlayerContext *ctx);
-void player_check_dynamic_resolution(PlayerContext *ctx, AVFrame *render_frame);
 void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame);
-void player_receive_video_frames(PlayerContext *ctx);
-void player_process_video_packet(PlayerContext *ctx);
+int thread_video_decode(void *data);
 
 /* ---- audio.c ---- */
 int player_init_audio(PlayerContext *ctx);
-void player_receive_audio_frames(PlayerContext *ctx);
-void player_process_audio_packet(PlayerContext *ctx);
 void player_reset_audio_buffer(PlayerContext *ctx);
 double player_get_audio_clock(PlayerContext *ctx);
 void player_apply_volume(PlayerContext *ctx);
+int thread_audio_decode(void *data);
 
 /* ---- subtitle.c ---- */
 void player_init_subtitles(PlayerContext *ctx);
@@ -198,13 +247,18 @@ void render_ass_overlay(PlayerContext *ctx, ASS_Image *img,
 void player_update_ass_storage(PlayerContext *ctx);
 
 /* ---- player.c ---- */
+void packet_queue_init(PacketQueue *q, int capacity);
+void packet_queue_put(PacketQueue *q, AVPacket *pkt);
+AVPacket *packet_queue_get(PacketQueue *q);
+void packet_queue_flush(PacketQueue *q);
+int thread_demux(void *data);
+void player_detect_device_tuning(PlayerContext *ctx);
 int player_open_file(PlayerContext *ctx, const char *filepath, int index,
                      int total);
 void player_close_file(PlayerContext *ctx);
 void player_shutdown_display(void);
 void player_run_loop(PlayerContext *ctx, int *global_quit, int *playlist_index);
 void player_do_seek(PlayerContext *ctx, double target_sec);
-void player_sleep_pumping(PlayerContext *ctx, double seconds);
 void player_handle_events(PlayerContext *ctx, int *global_quit,
                           int *playlist_index);
 void player_present_frame(PlayerContext *ctx);
