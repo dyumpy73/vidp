@@ -63,7 +63,7 @@ chmod +x VidP-x86_64.AppImage
 
 **Debian Forky / Testing / Sid:**
 ```bash
-wget https://github.com/dyumpy73/vidp/releases/latest/download/vidp_0.0.4_amd64.deb
+wget https://github.com/dyumpy73/vidp/releases/latest/download/vidp_0.1.0_amd64.deb
 sudo dpkg -i vidp_0.1.0_amd64.deb
 sudo apt install -f
 ```
