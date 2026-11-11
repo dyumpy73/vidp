@@ -67,6 +67,7 @@ int main(int argc, char *argv[]) {
   }
 
   ui_clear_cache();
+  player_shutdown_subtitles_global();
   player_shutdown_display();
   player_cleanup_font();
   free_playlist(playlist, playlist_count);

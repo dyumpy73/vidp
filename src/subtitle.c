@@ -1,5 +1,8 @@
 #include "player.h"
 
+static ASS_Library *g_ass_lib = NULL;
+static ASS_Renderer *g_ass_rend = NULL;
+
 static inline uint8_t clamp8(int v) { return v > 255 ? 255 : (uint8_t)v; }
 
 static inline void blend_ass_pixel(uint32_t *pixel, uint8_t r, uint8_t g,
@@ -203,31 +206,33 @@ void player_init_subtitles(PlayerContext *ctx) {
   if (ctx->subtitle_stream_count <= 0)
     return;
 
-  ctx->ass_library = ass_library_init();
-  if (!ctx->ass_library) {
-    fprintf(stderr, "[VidP] ass_library_init failed, subtitles disabled\n");
-    return;
+  if (!g_ass_lib) {
+    g_ass_lib = ass_library_init();
+    if (!g_ass_lib) {
+      fprintf(stderr, "[VidP] ass_library_init failed, subtitles disabled\n");
+      return;
+    }
   }
-
+  ctx->ass_library = g_ass_lib;
   player_extract_attached_fonts(ctx);
 
-  ctx->ass_renderer = ass_renderer_init(ctx->ass_library);
-  if (!ctx->ass_renderer) {
-    fprintf(stderr, "[VidP] ass_renderer_init failed, subtitles disabled\n");
-    ass_library_done(ctx->ass_library);
-    ctx->ass_library = NULL;
-    return;
+  if (!g_ass_rend) {
+    g_ass_rend = ass_renderer_init(g_ass_lib);
+    if (!g_ass_rend) {
+      fprintf(stderr, "[VidP] ass_renderer_init failed, subtitles disabled\n");
+      return;
+    }
+    ass_set_hinting(g_ass_rend, ASS_HINTING_NONE);
+    ass_set_shaper(g_ass_rend, ASS_SHAPING_COMPLEX);
+    ass_set_cache_limits(g_ass_rend, 500, 32);
   }
+  ctx->ass_renderer = g_ass_rend;
 
   player_update_ass_storage(ctx);
-  ass_set_hinting(ctx->ass_renderer, ASS_HINTING_NONE);
-  ass_set_shaper(ctx->ass_renderer, ASS_SHAPING_COMPLEX);
-  ass_set_fonts(ctx->ass_renderer, NULL, "Sans", ASS_FONTPROVIDER_AUTODETECT,
-                NULL, 1);
-  ass_set_cache_limits(ctx->ass_renderer, 500, 32);
+  ass_set_fonts(g_ass_rend, NULL, "Sans", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 
   for (int i = 0; i < ctx->subtitle_stream_count; i++) {
-    ctx->ass_tracks[i] = ass_new_track(ctx->ass_library);
+    ctx->ass_tracks[i] = ass_new_track(g_ass_lib);
     if (!ctx->ass_tracks[i])
       continue;
 
@@ -242,6 +247,17 @@ void player_init_subtitles(PlayerContext *ctx) {
   if (ctx->current_subtitle_idx >= 0 &&
       ctx->current_subtitle_idx < ctx->subtitle_stream_count) {
     ctx->ass_track = ctx->ass_tracks[ctx->current_subtitle_idx];
+  }
+}
+
+void player_shutdown_subtitles_global(void) {
+  if (g_ass_rend) {
+    ass_renderer_done(g_ass_rend);
+    g_ass_rend = NULL;
+  }
+  if (g_ass_lib) {
+    ass_library_done(g_ass_lib);
+    g_ass_lib = NULL;
   }
 }
 

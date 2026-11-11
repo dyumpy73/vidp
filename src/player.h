@@ -245,6 +245,7 @@ void player_switch_subtitle(PlayerContext *ctx);
 void render_ass_overlay(PlayerContext *ctx, ASS_Image *img,
                         SDL_FRect *dest_rect, int changed);
 void player_update_ass_storage(PlayerContext *ctx);
+void player_shutdown_subtitles_global(void);
 
 /* ---- player.c ---- */
 void packet_queue_init(PacketQueue *q, int capacity);

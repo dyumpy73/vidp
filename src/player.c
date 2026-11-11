@@ -504,14 +504,9 @@ void player_close_file(PlayerContext *ctx) {
     }
   }
   ctx->ass_track = NULL;
-  if (ctx->ass_renderer) {
-    ass_renderer_done(ctx->ass_renderer);
-    ctx->ass_renderer = NULL;
-  }
-  if (ctx->ass_library) {
-    ass_library_done(ctx->ass_library);
-    ctx->ass_library = NULL;
-  }
+  ctx->ass_renderer = NULL;
+  ctx->ass_library = NULL;
+
   if (ctx->sub_tex) {
     SDL_DestroyTexture(ctx->sub_tex);
     ctx->sub_tex = NULL;
