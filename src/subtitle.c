@@ -3,6 +3,7 @@
 #define VIDP_MAX_TRACKED_FONTS 64
 static uint64_t g_font_hashes[VIDP_MAX_TRACKED_FONTS];
 static int g_font_hash_count = 0;
+static int g_font_cap_warned = 0;
 
 static ASS_Library *g_ass_lib = NULL;
 static ASS_Renderer *g_ass_rend = NULL;
@@ -200,12 +201,21 @@ static int player_extract_attached_fonts(PlayerContext *ctx) {
 
     uint64_t h =
         fnv1a_hash(st->codecpar->extradata, st->codecpar->extradata_size);
-    if (!font_hash_seen(h) && g_font_hash_count < VIDP_MAX_TRACKED_FONTS) {
-      ass_add_font(ctx->ass_library, (char *)tag->value,
-                   (char *)st->codecpar->extradata,
-                   st->codecpar->extradata_size);
-      g_font_hashes[g_font_hash_count++] = h;
-      added = 1;
+    if (!font_hash_seen(h)) {
+      if (g_font_hash_count < VIDP_MAX_TRACKED_FONTS) {
+        ass_add_font(ctx->ass_library, (char *)tag->value,
+                     (char *)st->codecpar->extradata,
+                     st->codecpar->extradata_size);
+        g_font_hashes[g_font_hash_count++] = h;
+        added = 1;
+      } else if (!g_font_cap_warned) {
+        fprintf(stderr,
+                "[VidP] Warning: %d unique embedded fonts tracked; "
+                "ignoring new fonts. Subtitles in newer files may fall "
+                "back to system fonts.\n",
+                VIDP_MAX_TRACKED_FONTS);
+        g_font_cap_warned = 1;
+      }
     }
     av_freep(&st->codecpar->extradata);
     st->codecpar->extradata_size = 0;
@@ -275,6 +285,7 @@ void player_shutdown_subtitles_global(void) {
     g_ass_lib = NULL;
   }
   g_font_hash_count = 0;
+  g_font_cap_warned = 0;
 }
 
 void player_process_subtitle_packet(PlayerContext *ctx) {

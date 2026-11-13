@@ -16,6 +16,49 @@ void player_apply_volume(PlayerContext *ctx) {
   SDL_SetAudioStreamGain(ctx->sdl_stream, ctx->volume);
 }
 
+static void drain_audio_decoder_locked(PlayerContext *ctx, AVFrame *frame) {
+  avcodec_send_packet(ctx->a_codec_ctx, NULL);
+  while (!atomic_load(&ctx->abort_request)) {
+    int ret = avcodec_receive_frame(ctx->a_codec_ctx, frame);
+    if (ret != 0)
+      break;
+
+    int out_samples = av_rescale_rnd(
+        swr_get_delay(ctx->swr_ctx, ctx->a_codec_ctx->sample_rate) +
+            frame->nb_samples,
+        ctx->out_freq, ctx->a_codec_ctx->sample_rate, AV_ROUND_UP);
+
+    int len = 0;
+    int real_size = 0;
+    if (out_samples > 0) {
+      int req_buf_size = av_samples_get_buffer_size(
+          NULL, ctx->output_channels, out_samples, AV_SAMPLE_FMT_S16, 1);
+      if (req_buf_size > 0) {
+        av_fast_malloc(&ctx->audio_out_buffer, &ctx->audio_out_buffer_size,
+                       req_buf_size);
+        if (ctx->audio_out_buffer) {
+          len = swr_convert(ctx->swr_ctx, &ctx->audio_out_buffer, out_samples,
+                            (const uint8_t **)frame->extended_data,
+                            frame->nb_samples);
+          if (len > 0) {
+            real_size = av_samples_get_buffer_size(NULL, ctx->output_channels,
+                                                   len, AV_SAMPLE_FMT_S16, 1);
+          }
+        }
+      }
+    }
+    av_frame_unref(frame);
+
+    if (real_size > 0 && ctx->audio_out_buffer) {
+      if (SDL_GetAudioStreamQueued(ctx->sdl_stream) < 1024 * 1024) {
+        int sample_frame_size = ctx->output_channels * (int)sizeof(int16_t);
+        push_audio_data(ctx, ctx->audio_out_buffer, real_size,
+                        sample_frame_size);
+      }
+    }
+  }
+}
+
 int thread_audio_decode(void *data) {
   PlayerContext *ctx = (PlayerContext *)data;
   AVFrame *frame = av_frame_alloc();
@@ -26,6 +69,10 @@ int thread_audio_decode(void *data) {
     if (!pkt) {
       if (atomic_load(&ctx->abort_request))
         break;
+
+      SDL_LockMutex(ctx->seek_mutex);
+      drain_audio_decoder_locked(ctx, frame);
+      SDL_UnlockMutex(ctx->seek_mutex);
 
       atomic_store(&ctx->a_dec_eof, 1);
 

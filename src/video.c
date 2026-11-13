@@ -302,6 +302,65 @@ void player_render_current_frame(PlayerContext *ctx, AVFrame *render_frame) {
   player_present_frame(ctx);
 }
 
+static void drain_video_decoder_locked(PlayerContext *ctx, AVFrame *frame) {
+  avcodec_send_packet(ctx->v_codec_ctx, NULL);
+  while (!atomic_load(&ctx->abort_request)) {
+    int ret = avcodec_receive_frame(ctx->v_codec_ctx, frame);
+    if (ret != 0)
+      break;
+
+    AVFrame *render_frame = frame;
+    AVFrame *sw_frame = NULL;
+    if (ctx->is_hw_accel && frame->format == ctx->hw_pix_fmt) {
+      sw_frame = av_frame_alloc();
+      if (sw_frame && av_hwframe_transfer_data(sw_frame, frame, 0) >= 0) {
+        sw_frame->pts = frame->pts;
+        sw_frame->best_effort_timestamp = frame->best_effort_timestamp;
+        sw_frame->color_range = frame->color_range;
+        sw_frame->colorspace = frame->colorspace;
+        sw_frame->color_primaries = frame->color_primaries;
+        sw_frame->color_trc = frame->color_trc;
+        sw_frame->chroma_location = frame->chroma_location;
+        render_frame = sw_frame;
+      } else {
+        if (sw_frame)
+          av_frame_free(&sw_frame);
+        sw_frame = NULL;
+        render_frame = NULL;
+      }
+    }
+
+    AVFrame *clone = NULL;
+    if (render_frame) {
+      clone = av_frame_clone(render_frame);
+      if (clone) {
+        clone->pts = frame->pts;
+        clone->best_effort_timestamp = frame->best_effort_timestamp;
+      }
+    }
+
+    av_frame_unref(frame);
+    if (sw_frame)
+      av_frame_free(&sw_frame);
+
+    if (!clone)
+      continue;
+
+    SDL_LockMutex(ctx->v_frame_q.mutex);
+    if (ctx->v_frame_q.count < ctx->frame_queue_cap &&
+        !atomic_load(&ctx->v_frame_q.abort_request)) {
+      ctx->v_frame_q.frames[ctx->v_frame_q.w_idx] = clone;
+      ctx->v_frame_q.w_idx = (ctx->v_frame_q.w_idx + 1) % ctx->frame_queue_cap;
+      ctx->v_frame_q.count++;
+      SDL_SignalCondition(ctx->v_frame_q.cond);
+      SDL_UnlockMutex(ctx->v_frame_q.mutex);
+    } else {
+      SDL_UnlockMutex(ctx->v_frame_q.mutex);
+      av_frame_free(&clone);
+    }
+  }
+}
+
 int thread_video_decode(void *data) {
   PlayerContext *ctx = (PlayerContext *)data;
   AVFrame *frame = av_frame_alloc();
@@ -312,6 +371,10 @@ int thread_video_decode(void *data) {
     if (!pkt) {
       if (atomic_load(&ctx->abort_request))
         break;
+
+      SDL_LockMutex(ctx->seek_mutex);
+      drain_video_decoder_locked(ctx, frame);
+      SDL_UnlockMutex(ctx->seek_mutex);
 
       SDL_LockMutex(ctx->v_frame_q.mutex);
       atomic_store(&ctx->v_dec_eof, 1);
@@ -365,8 +428,8 @@ int thread_video_decode(void *data) {
           render_frame = NULL;
           if (++ctx->hw_transfer_failures >= 10) {
             av_frame_unref(frame);
-            SDL_UnlockMutex(ctx->seek_mutex);
             player_fallback_to_sw(ctx);
+            SDL_UnlockMutex(ctx->seek_mutex);
             break;
           }
         }
