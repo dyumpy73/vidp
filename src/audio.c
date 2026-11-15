@@ -17,11 +17,20 @@ void player_apply_volume(PlayerContext *ctx) {
 }
 
 static void drain_audio_decoder_locked(PlayerContext *ctx, AVFrame *frame) {
+  if (!ctx->a_codec_ctx || !ctx->swr_ctx || !ctx->sdl_stream)
+    return;
+
   avcodec_send_packet(ctx->a_codec_ctx, NULL);
   while (!atomic_load(&ctx->abort_request)) {
     int ret = avcodec_receive_frame(ctx->a_codec_ctx, frame);
     if (ret != 0)
       break;
+
+    double frame_pts = -1.0;
+    int64_t apts = frame->best_effort_timestamp;
+    if (apts != AV_NOPTS_VALUE)
+      frame_pts =
+          apts * av_q2d(ctx->fmt_ctx->streams[ctx->audio_stream]->time_base);
 
     int out_samples = av_rescale_rnd(
         swr_get_delay(ctx->swr_ctx, ctx->a_codec_ctx->sample_rate) +
@@ -54,6 +63,15 @@ static void drain_audio_decoder_locked(PlayerContext *ctx, AVFrame *frame) {
         int sample_frame_size = ctx->output_channels * (int)sizeof(int16_t);
         push_audio_data(ctx, ctx->audio_out_buffer, real_size,
                         sample_frame_size);
+
+        double pts_out = (ctx->pending_audio_pts >= 0.0)
+                             ? ctx->pending_audio_pts
+                             : frame_pts;
+        if (pts_out >= 0.0 && ctx->bytes_per_sec > 0) {
+          ctx->last_audio_pts =
+              pts_out + (double)real_size / ctx->bytes_per_sec;
+          ctx->pending_audio_pts = ctx->last_audio_pts;
+        }
       }
     }
   }

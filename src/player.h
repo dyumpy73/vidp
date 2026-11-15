@@ -47,21 +47,18 @@ static inline void player_configure_video_threads(AVCodecContext *c,
   int logical = SDL_GetNumLogicalCPUCores();
   if (logical < 1)
     logical = 1;
-
   int cap;
   if (is_hw_accel) {
     cap = 2;
   } else {
     cap = logical > 4 ? 4 : logical;
   }
-
   const char *e = getenv("VIDP_THREADS");
   if (e) {
     int v = atoi(e);
     if (v > 0)
       cap = v;
   }
-
   if (logical > cap)
     logical = cap;
   c->thread_count = logical;
@@ -124,6 +121,7 @@ typedef struct {
   atomic_int audio_generation;
   atomic_int seek_generation;
   SDL_Mutex *seek_mutex;
+  SDL_Mutex *sub_mutex;
 
   SDL_AudioStream *sdl_stream;
   SDL_AudioDeviceID audio_dev;

@@ -63,8 +63,8 @@ chmod +x VidP-x86_64.AppImage
 
 **Debian Forky / Testing / Sid:**
 ```bash
-wget https://github.com/dyumpy73/vidp/releases/latest/download/vidp_0.1.0_amd64.deb
-sudo dpkg -i vidp_0.1.0_amd64.deb
+wget https://github.com/dyumpy73/vidp/releases/latest/download/vidp_0.1.1_amd64.deb
+sudo dpkg -i vidp_0.1.1_amd64.deb
 sudo apt install -f
 ```
 
@@ -148,14 +148,17 @@ folders can be queued in one go.
 | **Ctrl+Enter** | Play all media in the folder under the cursor (or the current folder if the cursor is on a file); ignores selection, non-recursive |
 | **Esc** | Cancel |
 
-## Known Limitations
-
+ ## Known Limitations
+ 
 - Single audio track only (first one).
 - ASS/SSA subtitles only, no external files.
 - No audio-only files.
 - No loop.
 - No mouse controls.
 - HDR → 8-bit without tone mapping (no zero-copy HW decode).
+- Video drain at EOF may drop a few frames on the last ~0.4 s of very
+- short clips (<30 s). Regular episodes and movies are unaffected.
+- Pause + window resize may show a blurry frame until unpause.
 
 ## License
 
