@@ -198,7 +198,6 @@ static int player_extract_attached_fonts(PlayerContext *ctx) {
       continue;
     if (!st->codecpar->extradata || st->codecpar->extradata_size <= 0)
       continue;
-
     uint64_t h =
         fnv1a_hash(st->codecpar->extradata, st->codecpar->extradata_size);
     if (!font_hash_seen(h)) {
@@ -291,6 +290,11 @@ void player_shutdown_subtitles_global(void) {
 void player_process_subtitle_packet(PlayerContext *ctx) {
   if (!ctx->ass_library || ctx->subtitle_stream_count <= 0)
     return;
+  if (!ctx->sub_mutex || !ctx->packet)
+    return;
+
+  SDL_LockMutex(ctx->sub_mutex);
+
   int pkt_stream = ctx->packet->stream_index;
   int sub_idx = -1;
   for (int i = 0; i < ctx->subtitle_stream_count; i++) {
@@ -299,15 +303,24 @@ void player_process_subtitle_packet(PlayerContext *ctx) {
       break;
     }
   }
-  if (sub_idx < 0 || !ctx->ass_tracks[sub_idx])
+  if (sub_idx < 0 || !ctx->ass_tracks[sub_idx]) {
+    SDL_UnlockMutex(ctx->sub_mutex);
     return;
+  }
+
   AVCodecParameters *par = ctx->fmt_ctx->streams[pkt_stream]->codecpar;
-  if (par->codec_id != AV_CODEC_ID_ASS && par->codec_id != AV_CODEC_ID_SSA)
+  if (par->codec_id != AV_CODEC_ID_ASS && par->codec_id != AV_CODEC_ID_SSA) {
+    SDL_UnlockMutex(ctx->sub_mutex);
     return;
+  }
+
   int64_t pts = (ctx->packet->pts != AV_NOPTS_VALUE) ? ctx->packet->pts
                                                      : ctx->packet->dts;
-  if (pts == AV_NOPTS_VALUE)
+  if (pts == AV_NOPTS_VALUE) {
+    SDL_UnlockMutex(ctx->sub_mutex);
     return;
+  }
+
   double sub_pts = pts * av_q2d(ctx->fmt_ctx->streams[pkt_stream]->time_base);
   double duration_sub = ctx->packet->duration *
                         av_q2d(ctx->fmt_ctx->streams[pkt_stream]->time_base);
@@ -315,24 +328,33 @@ void player_process_subtitle_packet(PlayerContext *ctx) {
   int64_t dur_ms = (int64_t)(duration_sub * 1000);
   if (dur_ms <= 0)
     dur_ms = 2000;
+
   if (ctx->last_video_time >= 0.0) {
     double sub_end = sub_pts + duration_sub;
-    if (sub_end < ctx->last_video_time - 1.0)
+    if (sub_end < ctx->last_video_time - 1.0) {
+      SDL_UnlockMutex(ctx->sub_mutex);
       return;
+    }
   }
+
   int size = ctx->packet->size;
   if (size + 1 > ctx->sub_tmp_cap) {
     int new_cap = size + 256;
     char *nt = realloc(ctx->sub_tmp, new_cap);
-    if (!nt)
+    if (!nt) {
+      SDL_UnlockMutex(ctx->sub_mutex);
       return;
+    }
     ctx->sub_tmp = nt;
     ctx->sub_tmp_cap = new_cap;
   }
+
   memcpy(ctx->sub_tmp, ctx->packet->data, size);
   ctx->sub_tmp[size] = '\0';
   ass_process_chunk(ctx->ass_tracks[sub_idx], ctx->sub_tmp, size, start_ms,
                     dur_ms);
+
+  SDL_UnlockMutex(ctx->sub_mutex);
 }
 
 void player_reset_subtitle_state(PlayerContext *ctx) {
@@ -351,7 +373,12 @@ void player_switch_subtitle(PlayerContext *ctx) {
     printf("[VidP] No subtitles available in this file.\n");
     return;
   }
+  if (!ctx->sub_mutex)
+    return;
+
   player_reset_subtitle_state(ctx);
+
+  SDL_LockMutex(ctx->sub_mutex);
   ctx->current_subtitle_idx++;
   if (ctx->current_subtitle_idx >= ctx->subtitle_stream_count) {
     ctx->current_subtitle_idx = -1;
@@ -363,4 +390,5 @@ void player_switch_subtitle(PlayerContext *ctx) {
         "[VidP] Switched to Subtitle stream index: %d (Total available: %d)\n",
         ctx->current_subtitle_idx + 1, ctx->subtitle_stream_count);
   }
+  SDL_UnlockMutex(ctx->sub_mutex);
 }

@@ -228,9 +228,6 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
 
   int stream_idx = -1;
   int64_t seek_av_time = (int64_t)(seek_from_sec * AV_TIME_BASE);
-  if (ctx->fmt_ctx->start_time != AV_NOPTS_VALUE &&
-      ctx->fmt_ctx->start_time > 0)
-    seek_av_time += ctx->fmt_ctx->start_time;
 
   int64_t seek_target = seek_av_time;
   if (ctx->video_stream >= 0) {
@@ -328,6 +325,10 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index,
                      int total) {
   memset(ctx, 0, sizeof(PlayerContext));
   ctx->seek_mutex = SDL_CreateMutex();
+  ctx->sub_mutex = SDL_CreateMutex();
+  if (!ctx->seek_mutex || !ctx->sub_mutex)
+    goto fail;
+
   player_detect_device_tuning(ctx);
   ctx->window = g_window;
   ctx->renderer = g_renderer;
@@ -463,9 +464,7 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index,
   ctx->frame_video = av_frame_alloc();
   ctx->frame_audio = av_frame_alloc();
   ctx->last_rendered_frame = av_frame_alloc();
-  ctx->packet = av_packet_alloc();
-  if (!ctx->frame_video || !ctx->frame_audio || !ctx->packet ||
-      !ctx->last_rendered_frame)
+  if (!ctx->frame_video || !ctx->frame_audio || !ctx->last_rendered_frame)
     goto fail;
 
   const char *base = strrchr(filepath, '/');
@@ -540,8 +539,6 @@ void player_close_file(PlayerContext *ctx) {
     av_frame_free(&ctx->frame_audio);
   if (ctx->last_rendered_frame)
     av_frame_free(&ctx->last_rendered_frame);
-  if (ctx->packet)
-    av_packet_free(&ctx->packet);
 
   if (ctx->v_codec_ctx)
     avcodec_free_context(&ctx->v_codec_ctx);
@@ -563,6 +560,10 @@ void player_close_file(PlayerContext *ctx) {
   if (ctx->renderer)
     g_renderer = ctx->renderer;
 
+  if (ctx->sub_mutex) {
+    SDL_DestroyMutex(ctx->sub_mutex);
+    ctx->sub_mutex = NULL;
+  }
   if (ctx->seek_mutex) {
     SDL_DestroyMutex(ctx->seek_mutex);
     ctx->seek_mutex = NULL;
@@ -634,14 +635,18 @@ void player_present_frame(PlayerContext *ctx) {
     SDL_RenderTexture(ctx->renderer, ctx->texture, NULL, &dest_rect);
   }
 
-  if (ctx->subtitle_visible && ctx->ass_renderer && ctx->ass_track) {
-    int changed = 0;
-    int64_t now_ms = (int64_t)(ctx->last_video_time * 1000);
-    ass_set_frame_size(ctx->ass_renderer, (int)dest_rect.w, (int)dest_rect.h);
-    ASS_Image *sub_img =
-        ass_render_frame(ctx->ass_renderer, ctx->ass_track, now_ms, &changed);
-    if (sub_img)
-      render_ass_overlay(ctx, sub_img, &dest_rect, changed);
+  if (ctx->subtitle_visible && ctx->sub_mutex) {
+    SDL_LockMutex(ctx->sub_mutex);
+    if (ctx->ass_renderer && ctx->ass_track) {
+      int changed = 0;
+      int64_t now_ms = (int64_t)(ctx->last_video_time * 1000);
+      ass_set_frame_size(ctx->ass_renderer, (int)dest_rect.w, (int)dest_rect.h);
+      ASS_Image *sub_img =
+          ass_render_frame(ctx->ass_renderer, ctx->ass_track, now_ms, &changed);
+      if (sub_img)
+        render_ass_overlay(ctx, sub_img, &dest_rect, changed);
+    }
+    SDL_UnlockMutex(ctx->sub_mutex);
   }
 
   if (ctx->volume_overlay_until > 0.0 &&
@@ -954,6 +959,14 @@ void player_run_loop(PlayerContext *ctx, int *global_quit,
       }
 
       if (drop) {
+        ctx->consecutive_drops++;
+        if (ctx->consecutive_drops > 15) {
+          ctx->consecutive_drops = 0;
+          drop = 0;
+        }
+      }
+
+      if (drop) {
         SDL_LockMutex(ctx->v_frame_q.mutex);
         av_frame_free(&ctx->v_frame_q.frames[ctx->v_frame_q.r_idx]);
         ctx->v_frame_q.r_idx =
@@ -964,15 +977,16 @@ void player_run_loop(PlayerContext *ctx, int *global_quit,
         continue;
       }
 
-      if (delay > 0.0) {
-        if (delay > 0.002)
-          SDL_Delay(1);
-        else
-          SDL_DelayNS((Uint64)(delay * 1000000000.0));
+      if (delay > 0.002) {
+        SDL_DelayNS((Uint64)((delay - 0.001) * 1000000000.0));
+        continue;
+      } else if (delay > 0.0) {
+        SDL_DelayNS((Uint64)(delay * 1000000000.0));
         continue;
       }
 
       ctx->last_video_time = frame_pts;
+      ctx->consecutive_drops = 0;
       player_render_current_frame(ctx, frame);
       ctx->step_pending = 0;
 
@@ -1010,6 +1024,9 @@ cleanup:
     SDL_WaitThread(ctx->a_dec_th, NULL);
     ctx->a_dec_th = NULL;
   }
+
+  packet_queue_flush(&ctx->v_pkt_q);
+  packet_queue_flush(&ctx->a_pkt_q);
 
   if (ctx->v_pkt_q.cond) {
     SDL_DestroyCondition(ctx->v_pkt_q.cond);
