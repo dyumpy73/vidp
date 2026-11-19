@@ -82,15 +82,21 @@ int thread_audio_decode(void *data) {
   AVFrame *frame = av_frame_alloc();
 
   while (!atomic_load(&ctx->abort_request)) {
+    if (atomic_exchange(&ctx->a_flush_req, 0)) {
+      avcodec_flush_buffers(ctx->a_codec_ctx);
+      if (ctx->swr_ctx) {
+        swr_close(ctx->swr_ctx);
+        swr_init(ctx->swr_ctx);
+      }
+    }
+
     AVPacket *pkt = packet_queue_get(&ctx->a_pkt_q);
 
     if (!pkt) {
       if (atomic_load(&ctx->abort_request))
         break;
 
-      SDL_LockMutex(ctx->seek_mutex);
       drain_audio_decoder_locked(ctx, frame);
-      SDL_UnlockMutex(ctx->seek_mutex);
 
       atomic_store(&ctx->a_dec_eof, 1);
 
@@ -108,18 +114,13 @@ int thread_audio_decode(void *data) {
 
     int gen = atomic_load(&ctx->audio_generation);
 
-    SDL_LockMutex(ctx->seek_mutex);
     avcodec_send_packet(ctx->a_codec_ctx, pkt);
-    SDL_UnlockMutex(ctx->seek_mutex);
     av_packet_free(&pkt);
 
     while (!atomic_load(&ctx->abort_request)) {
-      SDL_LockMutex(ctx->seek_mutex);
       int ret = avcodec_receive_frame(ctx->a_codec_ctx, frame);
-      if (ret != 0) {
-        SDL_UnlockMutex(ctx->seek_mutex);
+      if (ret != 0)
         break;
-      }
 
       double frame_pts = -1.0;
       int64_t apts = frame->best_effort_timestamp;
@@ -131,7 +132,6 @@ int thread_audio_decode(void *data) {
         if (apts != AV_NOPTS_VALUE) {
           if (frame_pts < ctx->audio_discard_until - 0.2) {
             av_frame_unref(frame);
-            SDL_UnlockMutex(ctx->seek_mutex);
             continue;
           }
           ctx->audio_discard_until = -1.0;
@@ -168,7 +168,6 @@ int thread_audio_decode(void *data) {
         }
       }
       av_frame_unref(frame);
-      SDL_UnlockMutex(ctx->seek_mutex);
 
       if (real_size > 0 && ctx->audio_out_buffer) {
         if (gen != atomic_load(&ctx->audio_generation)) {
