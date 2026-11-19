@@ -16,7 +16,8 @@ SRC = src/main.c \
       src/subtitle.c \
       src/playlist.c \
       src/utils.c \
-      src/idle.c
+      src/idle.c \
+			src/osd.c
 OBJ = $(SRC:.c=.o)
 
 .PHONY: all debug release install uninstall clean

@@ -14,6 +14,18 @@ static SDL_Renderer *g_renderer = NULL;
 static SDL_Cursor *g_blank_cursor = NULL;
 static int g_cursor_hidden = 0;
 
+void player_set_volume(PlayerContext *ctx, float v) {
+  if (v < 0.0f)
+    v = 0.0f;
+  if (v > 1.0f)
+    v = 1.0f;
+  ctx->volume = v;
+  g_master_volume = v;
+  player_apply_volume(ctx);
+  ctx->osd.visible_until = get_monotonic_time() + 1.5;
+  ctx->osd.needs_redraw = 1;
+}
+
 void player_detect_device_tuning(PlayerContext *ctx) {
   int ram_mb = SDL_GetSystemRAM();
   if (ram_mb <= 0)
@@ -39,6 +51,7 @@ void player_detect_device_tuning(PlayerContext *ctx) {
     frame_q = 6;
     packet_q = 32;
   }
+
   if (logical <= 1) {
     frame_q = 2;
     packet_q = 8;
@@ -72,14 +85,13 @@ void packet_queue_init(PacketQueue *q, int capacity) {
   q->capacity = capacity;
   q->mutex = SDL_CreateMutex();
   q->cond = SDL_CreateCondition();
-  if (!q->mutex || !q->cond) {
-    fprintf(stderr, "[VidP] Failed to init packet queue!\n");
+  if (!q->mutex || !q->cond)
     return;
-  }
   atomic_store(&q->abort_request, 0);
 }
 
-void packet_queue_put(PacketQueue *q, AVPacket *pkt) {
+void packet_queue_put(PacketQueue *q, AVPacket *pkt, atomic_int *seek_gen,
+                      int gen) {
   if (!q->mutex || !q->cond) {
     if (pkt)
       av_packet_free(&pkt);
@@ -89,7 +101,8 @@ void packet_queue_put(PacketQueue *q, AVPacket *pkt) {
   while (q->count >= q->capacity && !atomic_load(&q->abort_request)) {
     SDL_WaitCondition(q->cond, q->mutex);
   }
-  if (atomic_load(&q->abort_request)) {
+  if (atomic_load(&q->abort_request) ||
+      (seek_gen && atomic_load(seek_gen) != gen)) {
     SDL_UnlockMutex(q->mutex);
     if (pkt)
       av_packet_free(&pkt);
@@ -151,8 +164,8 @@ int thread_demux(void *data) {
         break;
 
       atomic_store(&ctx->demux_eof, 1);
-      packet_queue_put(&ctx->v_pkt_q, NULL);
-      packet_queue_put(&ctx->a_pkt_q, NULL);
+      packet_queue_put(&ctx->v_pkt_q, NULL, NULL, 0);
+      packet_queue_put(&ctx->a_pkt_q, NULL, NULL, 0);
 
       SDL_LockMutex(ctx->v_pkt_q.mutex);
       while (!atomic_load(&ctx->abort_request) &&
@@ -174,26 +187,21 @@ int thread_demux(void *data) {
     if (pkt->stream_index == ctx->video_stream) {
       AVPacket *clone = av_packet_clone(pkt);
       if (clone)
-        packet_queue_put(&ctx->v_pkt_q, clone);
+        packet_queue_put(&ctx->v_pkt_q, clone, &ctx->seek_generation,
+                         gen_before);
     } else if (pkt->stream_index == ctx->audio_stream) {
       AVPacket *clone = av_packet_clone(pkt);
       if (clone)
-        packet_queue_put(&ctx->a_pkt_q, clone);
-    } else {
-      for (int i = 0; i < ctx->subtitle_stream_count; i++) {
-        if (pkt->stream_index == ctx->subtitle_streams[i]) {
-          ctx->packet = pkt;
-          player_process_subtitle_packet(ctx);
-          ctx->packet = NULL;
-          break;
-        }
-      }
+        packet_queue_put(&ctx->a_pkt_q, clone, &ctx->seek_generation,
+                         gen_before);
     }
+    // Subtitle tidak perlu diproses di sini lagi, udah di-preload.
+
     av_packet_unref(pkt);
   }
 
-  packet_queue_put(&ctx->v_pkt_q, NULL);
-  packet_queue_put(&ctx->a_pkt_q, NULL);
+  packet_queue_put(&ctx->v_pkt_q, NULL, NULL, 0);
+  packet_queue_put(&ctx->a_pkt_q, NULL, NULL, 0);
   av_packet_free(&pkt);
   return 0;
 }
@@ -251,19 +259,13 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
     return;
   }
 
-  if (ctx->v_codec_ctx)
-    avcodec_flush_buffers(ctx->v_codec_ctx);
-  if (ctx->a_codec_ctx)
-    avcodec_flush_buffers(ctx->a_codec_ctx);
+  atomic_store(&ctx->v_flush_req, 1);
+  atomic_store(&ctx->a_flush_req, 1);
 
   packet_queue_flush(&ctx->v_pkt_q);
   packet_queue_flush(&ctx->a_pkt_q);
 
   player_reset_audio_buffer(ctx);
-  if (ctx->swr_ctx) {
-    swr_close(ctx->swr_ctx);
-    swr_init(ctx->swr_ctx);
-  }
 
   atomic_store(&ctx->demux_eof, 0);
   atomic_store(&ctx->v_dec_eof, 0);
@@ -302,6 +304,7 @@ void player_do_seek(PlayerContext *ctx, double target_sec) {
   ctx->sub_frame_w = 0;
   ctx->audio_starve_since = 0.0;
   ctx->last_clock_valid_time = 0.0;
+  ctx->osd.needs_redraw = 1;
 
   if (ctx->last_rendered_frame)
     av_frame_unref(ctx->last_rendered_frame);
@@ -325,8 +328,7 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index,
                      int total) {
   memset(ctx, 0, sizeof(PlayerContext));
   ctx->seek_mutex = SDL_CreateMutex();
-  ctx->sub_mutex = SDL_CreateMutex();
-  if (!ctx->seek_mutex || !ctx->sub_mutex)
+  if (!ctx->seek_mutex)
     goto fail;
 
   player_detect_device_tuning(ctx);
@@ -336,6 +338,7 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index,
   ctx->playlist_index = index;
   ctx->nav_action = NAV_NEXT;
   ctx->volume = g_master_volume;
+  ctx->osd.pre_mute_volume = 1.0f;
   ctx->discard_until = -1.0;
   ctx->audio_discard_until = -1.0;
   ctx->last_audio_pts = -1.0;
@@ -347,6 +350,9 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index,
   ctx->current_subtitle_idx = -1;
   atomic_store(&ctx->audio_generation, 0);
   atomic_store(&ctx->seek_generation, 0);
+  atomic_store(&ctx->v_flush_req, 0);
+  atomic_store(&ctx->a_flush_req, 0);
+  ctx->osd.needs_redraw = 1;
 
   if (!g_blank_cursor)
     g_blank_cursor = create_blank_cursor();
@@ -355,10 +361,14 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index,
   ctx->cursor_hidden = g_cursor_hidden;
 
   ctx->fmt_ctx = avformat_alloc_context();
+  ctx->fmt_ctx->flags |= AVFMT_FLAG_NOBUFFER;
+
   if (!ctx->fmt_ctx)
     goto fail;
-  ctx->fmt_ctx->probesize = 4 * 1024 * 1024;
-  ctx->fmt_ctx->max_analyze_duration = 3 * AV_TIME_BASE;
+
+  ctx->fmt_ctx->probesize = 1024 * 1024;
+  ctx->fmt_ctx->max_analyze_duration = AV_TIME_BASE;
+
   if (avformat_open_input(&ctx->fmt_ctx, filepath, NULL, NULL) != 0)
     goto fail;
   if (avformat_find_stream_info(ctx->fmt_ctx, NULL) < 0)
@@ -375,7 +385,11 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index,
       ctx->audio_stream = i;
     if (codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) {
       if (codecpar->codec_id == AV_CODEC_ID_ASS ||
-          codecpar->codec_id == AV_CODEC_ID_SSA) {
+          codecpar->codec_id == AV_CODEC_ID_SSA ||
+          codecpar->codec_id == AV_CODEC_ID_SUBRIP ||
+          codecpar->codec_id == AV_CODEC_ID_WEBVTT ||
+          codecpar->codec_id == AV_CODEC_ID_TEXT ||
+          codecpar->codec_id == AV_CODEC_ID_MOV_TEXT) {
         if (ctx->subtitle_stream_count < MAX_SUBTITLE_STREAM)
           ctx->subtitle_streams[ctx->subtitle_stream_count++] = i;
       }
@@ -459,7 +473,9 @@ int player_open_file(PlayerContext *ctx, const char *filepath, int index,
       ctx->audio_stream = -1;
     }
   }
+
   player_init_subtitles(ctx);
+  player_preload_subtitles(ctx); // <--- DIPANGGIL DI SINI
 
   ctx->frame_video = av_frame_alloc();
   ctx->frame_audio = av_frame_alloc();
@@ -560,10 +576,6 @@ void player_close_file(PlayerContext *ctx) {
   if (ctx->renderer)
     g_renderer = ctx->renderer;
 
-  if (ctx->sub_mutex) {
-    SDL_DestroyMutex(ctx->sub_mutex);
-    ctx->sub_mutex = NULL;
-  }
   if (ctx->seek_mutex) {
     SDL_DestroyMutex(ctx->seek_mutex);
     ctx->seek_mutex = NULL;
@@ -635,8 +647,7 @@ void player_present_frame(PlayerContext *ctx) {
     SDL_RenderTexture(ctx->renderer, ctx->texture, NULL, &dest_rect);
   }
 
-  if (ctx->subtitle_visible && ctx->sub_mutex) {
-    SDL_LockMutex(ctx->sub_mutex);
+  if (ctx->subtitle_visible) {
     if (ctx->ass_renderer && ctx->ass_track) {
       int changed = 0;
       int64_t now_ms = (int64_t)(ctx->last_video_time * 1000);
@@ -646,23 +657,9 @@ void player_present_frame(PlayerContext *ctx) {
       if (sub_img)
         render_ass_overlay(ctx, sub_img, &dest_rect, changed);
     }
-    SDL_UnlockMutex(ctx->sub_mutex);
   }
 
-  if (ctx->volume_overlay_until > 0.0 &&
-      get_monotonic_time() < ctx->volume_overlay_until) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "Volume: %d%%", (int)(ctx->volume * 100 + 0.5f));
-    int ww, wh;
-    SDL_GetWindowSize(ctx->window, &ww, &wh);
-    SDL_Color white = {255, 255, 255, 255};
-    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
-    SDL_FRect box = {20, (float)wh - 60, 170, 34};
-    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 190);
-    SDL_RenderFillRect(ctx->renderer, &box);
-    ui_text_left(ctx->renderer, buf, white, 30, wh - 54);
-    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_NONE);
-  }
+  osd_render(ctx, &dest_rect);
 
   SDL_RenderPresent(ctx->renderer);
   ctx->has_last_frame = 1;
@@ -674,14 +671,32 @@ void player_handle_events(PlayerContext *ctx, int *global_quit,
   while (SDL_PollEvent(&event)) {
     if (event.type == SDL_EVENT_QUIT)
       *global_quit = 1;
-    if (event.type == SDL_EVENT_MOUSE_MOTION ||
-        event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+
+    if (event.type == SDL_EVENT_MOUSE_MOTION) {
       ctx->last_mouse_move = SDL_GetTicks();
       if (ctx->cursor_hidden) {
         SDL_SetCursor(SDL_GetDefaultCursor());
         ctx->cursor_hidden = 0;
       }
+      osd_on_mouse_move(ctx, event.motion.x, event.motion.y);
     }
+    if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+        event.button.button == SDL_BUTTON_LEFT) {
+      ctx->last_mouse_move = SDL_GetTicks();
+      if (ctx->cursor_hidden) {
+        SDL_SetCursor(SDL_GetDefaultCursor());
+        ctx->cursor_hidden = 0;
+      }
+      osd_on_mouse_down(ctx, event.button.x, event.button.y);
+    }
+    if (event.type == SDL_EVENT_MOUSE_BUTTON_UP &&
+        event.button.button == SDL_BUTTON_LEFT) {
+      osd_on_mouse_up(ctx, event.button.x, event.button.y);
+    }
+    if (event.type == SDL_EVENT_WINDOW_MOUSE_LEAVE) {
+      ctx->osd.hover = 0;
+    }
+
     if (event.type == SDL_EVENT_WINDOW_MOUSE_ENTER ||
         event.type == SDL_EVENT_WINDOW_FOCUS_GAINED ||
         event.type == SDL_EVENT_WINDOW_RESIZED ||
@@ -731,22 +746,14 @@ void player_handle_events(PlayerContext *ctx, int *global_quit,
           else
             SDL_ResumeAudioDevice(ctx->audio_dev);
         }
+        ctx->osd.visible_until = get_monotonic_time() + 2.5;
+        ctx->osd.needs_redraw = 1;
         break;
       case SDLK_UP:
-        ctx->volume = (ctx->volume + 0.1f > 1.0f) ? 1.0f : ctx->volume + 0.1f;
-        g_master_volume = ctx->volume;
-        player_apply_volume(ctx);
-        ctx->volume_overlay_until = get_monotonic_time() + 1.0;
-        if (ctx->paused && ctx->has_last_frame && ctx->texture)
-          player_present_frame(ctx);
+        player_set_volume(ctx, ctx->volume + 0.1f);
         break;
       case SDLK_DOWN:
-        ctx->volume = (ctx->volume - 0.1f < 0.0f) ? 0.0f : ctx->volume - 0.1f;
-        g_master_volume = ctx->volume;
-        player_apply_volume(ctx);
-        ctx->volume_overlay_until = get_monotonic_time() + 1.0;
-        if (ctx->paused && ctx->has_last_frame && ctx->texture)
-          player_present_frame(ctx);
+        player_set_volume(ctx, ctx->volume - 0.1f);
         break;
       case SDLK_RIGHT:
       case SDLK_LEFT: {
@@ -768,7 +775,7 @@ void player_handle_events(PlayerContext *ctx, int *global_quit,
             break;
           }
         }
-        ctx->seek_requested = 1;
+        atomic_store(&ctx->seek_requested, 1);
         break;
       }
       case SDLK_N:
@@ -783,14 +790,16 @@ void player_handle_events(PlayerContext *ctx, int *global_quit,
           ctx->file_finished = 1;
         } else {
           ctx->seek_target = 0.0;
-          ctx->seek_requested = 1;
+          atomic_store(&ctx->seek_requested, 1);
         }
         break;
       case SDLK_V:
         ctx->subtitle_visible = !ctx->subtitle_visible;
+        ctx->osd.needs_redraw = 1;
         break;
       case SDLK_S:
         player_switch_subtitle(ctx);
+        ctx->osd.needs_redraw = 1;
         break;
       }
     }
@@ -837,26 +846,32 @@ void player_run_loop(PlayerContext *ctx, int *global_quit,
     player_handle_events(ctx, global_quit, playlist_index);
 
     if (!ctx->cursor_hidden && (SDL_GetTicks() - ctx->last_mouse_move > 2000)) {
-      if (ctx->blank_cursor)
-        SDL_SetCursor(ctx->blank_cursor);
-      ctx->cursor_hidden = 1;
+      if (!ctx->osd.hover) {
+        if (ctx->blank_cursor)
+          SDL_SetCursor(ctx->blank_cursor);
+        ctx->cursor_hidden = 1;
+      } else {
+        ctx->last_mouse_move = SDL_GetTicks();
+      }
     }
     if (*global_quit || ctx->file_finished)
       break;
 
-    if (ctx->seek_requested) {
-      ctx->seek_requested = 0;
+    if (atomic_exchange(&ctx->seek_requested, 0)) {
       player_do_seek(ctx, ctx->seek_target);
     }
 
     if (ctx->paused && !ctx->step_pending) {
-      if (ctx->has_last_frame && ctx->texture &&
-          ctx->volume_overlay_until > 0.0 &&
-          get_monotonic_time() >= ctx->volume_overlay_until) {
+      int is_vis = osd_is_visible(ctx);
+      int need_draw = (is_vis != ctx->osd.was_visible) || ctx->osd.needs_redraw;
+      if (need_draw && ctx->has_last_frame && ctx->texture) {
         player_present_frame(ctx);
-        ctx->volume_overlay_until = 0.0;
+        SDL_Delay(16);
+      } else {
+        SDL_Delay(10);
       }
-      SDL_Delay(10);
+      ctx->osd.was_visible = is_vis;
+      ctx->osd.needs_redraw = 0;
       continue;
     }
 
@@ -978,6 +993,8 @@ void player_run_loop(PlayerContext *ctx, int *global_quit,
       }
 
       if (delay > 0.002) {
+        if (delay > 0.02)
+          delay = 0.02;
         SDL_DelayNS((Uint64)((delay - 0.001) * 1000000000.0));
         continue;
       } else if (delay > 0.0) {

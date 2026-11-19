@@ -4,10 +4,12 @@ Lightweight C media player built with FFmpeg, SDL3, and libass.
 
 ## Features
 
+- Interactive OSD (mouse controls for Play/Pause, Seek bar, Mute, CC)
 - Multi-threaded pipeline: demuxer + video decoder + audio decoder + main render thread
 - Hardware decode: VAAPI → CUDA → VDPAU → software (auto-fallback)
 - Render: OpenGL → OpenGLES2 → Vulkan → software (auto-select)
-- ASS/SSA subtitles via libass, embedded fonts supported
+- Subtitle support: ASS/SSA (full styling via libass) and SRT/WebVTT (auto-converted via FFmpeg)
+- Subtitle pre-loading: Subtitles never disappear or desync, even after multiple seeks
 - Audio master clock, wall-clock fallback
 - Adaptive queue sizing based on RAM/CPU
 - Seek with stale-packet guard (no H.264 reference warnings)
@@ -23,7 +25,8 @@ src/main.c      entry point, file-to-file loop
 src/player.c    open/close, main loop, seek, events, frame presentation
 src/video.c     video decode + render + HW accel
 src/audio.c     audio decode + resample + SDL audio stream
-src/subtitle.c  libass integration
+src/subtitle.c  libass integration, subtitle preloader
+src/osd.c       interactive On-Screen Display (mouse controls)
 src/playlist.c  folder scan + playlist building
 src/idle.c      idle screen + file picker
 src/utils.c     clock, natural sort, media check, UI text cache
@@ -63,8 +66,8 @@ chmod +x VidP-x86_64.AppImage
 
 **Debian Forky / Testing / Sid:**
 ```bash
-wget https://github.com/dyumpy73/vidp/releases/latest/download/vidp_0.1.1_amd64.deb
-sudo dpkg -i vidp_0.1.1_amd64.deb
+wget https://github.com/dyumpy73/vidp/releases/latest/download/vidp_0.2.0_amd64.deb
+sudo dpkg -i vidp_0.2.0_amd64.deb
 sudo apt install -f
 ```
 
@@ -110,9 +113,9 @@ vidp                  # idle screen
 | `VIDP_PACKET_QUEUE=<n>` | Packet queue size, 4–32. |
 | `VIDP_LOWMEM=1` | Force minimal queues. |
 
-## Keyboard Shortcuts
+## Keyboard & Mouse Controls 
 
-### Playback
+### Playback (Keyboard)
 
 | Key | Action |
 | :--- | :--- |
@@ -125,6 +128,17 @@ vidp                  # idle screen
 | **V** | Toggle subtitles |
 | **S** | Cycle subtitle streams (last step = off) |
 | **Esc** | Quit |
+
+### Playback (Mouse)
+
+| Action | Function |
+| :--- | :--- |
+| Move Mouse | Show OSD Overlay |
+| Click Play/Pause | Toggle playback |
+| Drag Seek Bar | Preview & seek to time |
+| Click Prev/Next | Change track |
+| Click CC | Cycle subtitles |
+| Click Speaker | Toggle mute |
 
 ### Idle screen
 
@@ -151,14 +165,11 @@ folders can be queued in one go.
  ## Known Limitations
  
 - Single audio track only (first one).
-- ASS/SSA subtitles only, no external files.
+- Image-based subtitles (PGS, VobSub) are not supported.
 - No audio-only files.
 - No loop.
-- No mouse controls.
 - HDR → 8-bit without tone mapping (no zero-copy HW decode).
-- Video drain at EOF may drop a few frames on the last ~0.4 s of very
-- short clips (<30 s). Regular episodes and movies are unaffected.
-- Pause + window resize may show a blurry frame until unpause.
+- Network streams (`http://`, `rtsp://`) are not supported.
 
 ## License
 

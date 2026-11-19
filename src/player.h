@@ -42,6 +42,12 @@
 #define MAX_FRAME_QUEUE_HARD_LIMIT 8
 #define MAX_PACKET_QUEUE_HARD_LIMIT 32
 
+typedef enum {
+  TEXT_ALIGN_LEFT = 0,
+  TEXT_ALIGN_CENTER = 1,
+  TEXT_ALIGN_RIGHT = 2
+} TextAlign;
+
 static inline void player_configure_video_threads(AVCodecContext *c,
                                                   int is_hw_accel) {
   int logical = SDL_GetNumLogicalCPUCores();
@@ -85,6 +91,31 @@ typedef struct {
   atomic_int abort_request;
 } FrameQueue;
 
+typedef enum {
+  OSD_NONE = 0,
+  OSD_PLAY,
+  OSD_PREV,
+  OSD_NEXT,
+  OSD_CC,
+  OSD_MUTE,
+  OSD_SEEK
+} OSDHit;
+
+typedef struct {
+  SDL_FRect panel, seek_track, seek_knob;
+  SDL_FRect btn_play, btn_prev, btn_next, btn_cc, btn_mute;
+} OSDLayout;
+
+typedef struct {
+  double visible_until;
+  int hover;
+  int seek_dragging;
+  double seek_drag_frac;
+  int was_visible;
+  float pre_mute_volume;
+  int needs_redraw;
+} OSDState;
+
 typedef struct {
   AVFormatContext *fmt_ctx;
   int video_stream;
@@ -104,7 +135,6 @@ typedef struct {
   AVFrame *frame_audio;
   AVFrame *frame_yuv;
   AVFrame *last_rendered_frame;
-  AVPacket *packet;
 
   PacketQueue v_pkt_q;
   PacketQueue a_pkt_q;
@@ -120,8 +150,11 @@ typedef struct {
   atomic_int a_dec_eof;
   atomic_int audio_generation;
   atomic_int seek_generation;
+
+  atomic_int v_flush_req;
+  atomic_int a_flush_req;
+
   SDL_Mutex *seek_mutex;
-  SDL_Mutex *sub_mutex;
 
   SDL_AudioStream *sdl_stream;
   SDL_AudioDeviceID audio_dev;
@@ -180,7 +213,7 @@ typedef struct {
   SDL_Cursor *blank_cursor;
 
   int has_last_frame;
-  double volume_overlay_until;
+  OSDState osd;
 
   int *global_quit_ref;
   int *playlist_index_ref;
@@ -188,7 +221,7 @@ typedef struct {
   int playlist_index;
   NavAction nav_action;
 
-  int seek_requested;
+  atomic_int seek_requested;
   double seek_target;
   int step_pending;
   int consecutive_drops;
@@ -209,6 +242,8 @@ void ui_clear_cache(void);
 void ui_text_left(SDL_Renderer *r, const char *text, SDL_Color c, int x, int y);
 void ui_text_center(SDL_Renderer *r, const char *text, SDL_Color c, int cx,
                     int y);
+void ui_text_box(SDL_Renderer *r, const char *text, SDL_Color c, SDL_FRect box,
+                 TextAlign align);
 
 /* ---- playlist.c ---- */
 void build_playlist(int argc, char *argv[], char ***playlist, int *count);
@@ -237,7 +272,7 @@ int thread_audio_decode(void *data);
 
 /* ---- subtitle.c ---- */
 void player_init_subtitles(PlayerContext *ctx);
-void player_process_subtitle_packet(PlayerContext *ctx);
+void player_preload_subtitles(PlayerContext *ctx); // <--- FUNGSI BARU
 void player_reset_subtitle_state(PlayerContext *ctx);
 void player_switch_subtitle(PlayerContext *ctx);
 void render_ass_overlay(PlayerContext *ctx, ASS_Image *img,
@@ -245,9 +280,18 @@ void render_ass_overlay(PlayerContext *ctx, ASS_Image *img,
 void player_update_ass_storage(PlayerContext *ctx);
 void player_shutdown_subtitles_global(void);
 
+/* ---- osd.c ---- */
+int osd_is_visible(PlayerContext *ctx);
+void osd_on_mouse_move(PlayerContext *ctx, float mx, float my);
+void osd_on_mouse_down(PlayerContext *ctx, float mx, float my);
+void osd_on_mouse_up(PlayerContext *ctx, float mx, float my);
+void osd_render(PlayerContext *ctx, const SDL_FRect *dest_rect);
+void player_set_volume(PlayerContext *ctx, float v);
+
 /* ---- player.c ---- */
 void packet_queue_init(PacketQueue *q, int capacity);
-void packet_queue_put(PacketQueue *q, AVPacket *pkt);
+void packet_queue_put(PacketQueue *q, AVPacket *pkt, atomic_int *seek_gen,
+                      int gen);
 AVPacket *packet_queue_get(PacketQueue *q);
 void packet_queue_flush(PacketQueue *q);
 int thread_demux(void *data);
